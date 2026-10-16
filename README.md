@@ -22,7 +22,14 @@
   <img src="docs/images/gameplay.png" width="45%" alt="annotated gameplay"/>
 </p>
 
-带标注框（玩家/敌人/水果/道具/检查牌）的完整通关录像见 [`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（83.5 秒，H.264，8.8 MB——GitHub 网页点开即可直接播放；由 `tools/record_clear.py` 一命录制，HUD 实时显示进度与 `*** STAGE CLEAR ***`）。
+<p align="center">
+  <em>最后冲刺 → 撞线通关 → 通关谢幕（GIF 自动播放）</em><br/>
+  <img src="docs/images/clear_highlight.gif" width="60%"/>
+</p>
+
+带标注框（玩家/敌人/水果/道具/检查牌）的完整通关录像见 [`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（83.5 秒，由 `tools/record_clear.py` 一命录制，HUD 实时显示进度与 `*** STAGE CLEAR ***`）。
+
+> **播放说明**：GitHub 不会在仓库文件页内嵌播放视频（点开只能下载）。上面的 GIF 会在本页自动播放；想要带播放器的完整版，把 `videos/adventure_island_clear.mp4`（8.8 MB）拖进任意 Issue / PR 评论框、或 README 的网页编辑器，GitHub 会自动上传并生成可播放链接（免费账号媒体上限 10 MB，本视频可以直接拖）。
 
 ## 快速开始
 
@@ -136,8 +143,8 @@ record.py              把一局录成 GIF + Contact Sheet
 ram_map.py             RAM 地址常量、对象槽解码、摄像机跟踪
 tools/                 111 个逆向探测脚本（见下表）
 runs/ppo_v10/          发布的第一关模型 + 训练曲线
-videos/                通关录像
-docs/images/           README 截图
+videos/                通关录像（mp4，GitHub 仅提供下载）
+docs/images/           README 截图 + 自动播放的通关 GIF
 ```
 
 ## tools/ 逆向工具集（节选）
