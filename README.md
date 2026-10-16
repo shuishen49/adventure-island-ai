@@ -22,7 +22,7 @@
   <img src="docs/images/gameplay.png" width="45%" alt="annotated gameplay"/>
 </p>
 
-带标注框（玩家/敌人/水果/道具/检查牌）的完整通关录像见 [`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（83.5 秒，由 `tools/record_clear.py` 一命录制，HUD 实时显示进度与 `*** STAGE CLEAR ***`）。
+带标注框（玩家/敌人/水果/道具/检查牌）的完整通关录像见 [`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（83.5 秒，H.264，8.8 MB——GitHub 网页点开即可直接播放；由 `tools/record_clear.py` 一命录制，HUD 实时显示进度与 `*** STAGE CLEAR ***`）。
 
 ## 快速开始
 
