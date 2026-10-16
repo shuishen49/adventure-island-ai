@@ -1,0 +1,9 @@
+# Runtime for training / evaluation (CPU-only is enough)
+cynes==0.1.2            # NES emulator with RAM access
+numpy>=2.0
+torch>=2.0              # CPU build fine (e.g. torch==2.14.1+cpu)
+pillow>=10.0            # frame downsampling / overlay drawing
+PySDL2>=0.9.17          # only needed for the live window (visualize.py / enjoy.py)
+pysdl2-dll>=2.32.10     # SDL2 binaries for Windows
+imageio>=2.30           # recording annotated MP4s (tools/record_clear.py)
+imageio-ffmpeg>=0.4     # ffmpeg backend for imageio

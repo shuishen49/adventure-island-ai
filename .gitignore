@@ -1,0 +1,28 @@
+# ---- ROM (copyrighted game data, deliberately NOT distributed) ----
+roms/
+*.nes
+*.zip
+
+# ---- video production project & recording outputs ----
+video/
+outputs/
+
+# ---- training runs: only the released stage-1 model is committed ----
+runs/*
+!runs/ppo_v10/
+runs/ppo_v10/*
+!runs/ppo_v10/ppo_final.pt
+!runs/ppo_v10/progress.csv
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- editor / os / agent ----
+.workbuddy/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
