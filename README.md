@@ -27,9 +27,11 @@
   <img src="docs/images/clear_highlight.gif" width="60%"/>
 </p>
 
-带标注框（玩家/敌人/水果/道具/检查牌）的完整通关录像见 [`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（83.5 秒，由 `tools/record_clear.py` 一命录制，HUD 实时显示进度与 `*** STAGE CLEAR ***`）。
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/9ad9bf77-fe2f-4991-b460-e1fe2591f353" controls width="60%" poster="docs/images/stage_clear.png"></video>
+</p>
 
-> **播放说明**：GitHub 不会在仓库文件页内嵌播放视频（点开只能下载）。上面的 GIF 会在本页自动播放；想要带播放器的完整版，把 `videos/adventure_island_clear.mp4`（8.8 MB）拖进任意 Issue / PR 评论框、或 README 的网页编辑器，GitHub 会自动上传并生成可播放链接（免费账号媒体上限 10 MB，本视频可以直接拖）。
+**▶️ [播放完整通关录像（83.5 秒一命通关，带播放器）](https://github.com/user-attachments/assets/9ad9bf77-fe2f-4991-b460-e1fe2591f353)**，由 `tools/record_clear.py` 录制，HUD 实时显示进度与 `*** STAGE CLEAR ***`。仓库内副本：[`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（8.8 MB，GitHub 文件页仅提供下载、不内嵌播放）。
 
 ## 快速开始
 
