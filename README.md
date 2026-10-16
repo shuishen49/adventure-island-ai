@@ -31,7 +31,7 @@
   <video src="https://github.com/user-attachments/assets/9ad9bf77-fe2f-4991-b460-e1fe2591f353" controls width="60%" poster="docs/images/stage_clear.png"></video>
 </p>
 
-**▶️ [播放完整通关录像（83.5 秒一命通关）](https://github.com/user-attachments/assets/9ad9bf77-fe2f-4991-b460-e1fe2591f353)** —— 由 `tools/record_clear.py` 录制，HUD 实时显示进度与 `*** STAGE CLEAR ***`。视频托管在 GitHub 媒体 CDN，上面的播放器默认静音（浏览器策略），可在播放器界面取消静音；仓库内副本：[`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（8.8 MB，文件页仅提供下载）。
+**▶️ [播放完整通关录像（83.5 秒一命通关）](https://github.com/user-attachments/assets/9ad9bf77-fe2f-4991-b460-e1fe2591f353)** —— HUD 实时显示进度与 `*** STAGE CLEAR ***`。视频托管在 GitHub 媒体 CDN，上面的播放器默认静音（浏览器策略），可在播放器界面取消静音；仓库内副本：[`videos/adventure_island_clear.mp4`](videos/adventure_island_clear.mp4)（8.8 MB，文件页仅提供下载）。
 
 ## 快速开始
 
