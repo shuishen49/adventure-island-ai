@@ -31,8 +31,6 @@
   <video src="https://github.com/user-attachments/assets/9ad9bf77-fe2f-4991-b460-e1fe2591f353" controls width="60%" poster="docs/images/stage_clear.png"></video>
 </p>
 
-**▶️ [播放完整通关录像（83.5 秒一命通关）](https://github.com/user-attachments/assets/9ad9bf77-fe2f-4991-b460-e1fe2591f353)** —— 一命打通的全程实录，HUD 实时显示进度与 `*** STAGE CLEAR ***`（播放器默认静音，可在播放器界面取消静音）。
-
 ## 快速开始
 
 ```sh
