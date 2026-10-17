@@ -56,7 +56,20 @@ KEY_A = sdl2.SDL_SCANCODE_X
 KEY_B = sdl2.SDL_SCANCODE_Z
 
 
-def boot(nes):
+def boot(nes, start_round=0, start_state=None):
+    """Boot into stage 1-1, or into a later stage / a dumped save state.
+
+    ``start_round`` is the 0-based $0038 value (1 = 1-2, 第二关);
+    ``start_state`` is a file written by tools/make_round2_state.py.
+    """
+    if start_state is not None:
+        import env as _e
+        nes.load(_e.load_state_file(start_state))
+        return
+    if start_round > 0:
+        import env as _e
+        _e.boot_to_round(nes, start_round)
+        return
     nes.step(frames=300)
     nes.controller = NES_INPUT_START
     nes.step(frames=60)
@@ -221,12 +234,19 @@ def annotate(frame: np.ndarray, nes, action_name: str,
     n_shot = onscreen(lambda i: i == R.ID_PROJECTILE)
     d.rectangle([0, 0, 256, 26 + (12 if hud_extra else 0)], fill=(0, 0, 0))
     armed = nes[R.WEAPON] > 0
+    # The board is a spare life: it eats one enemy hit (falls still kill).
+    # Shout about it, or the window gives no clue why a hit did not hurt.
+    boarding = nes[R.SKATEBOARD] > 0
     d.text((3, 2), f"LIVES {nes[R.LIVES]}  STA {nes[R.STAMINA]}  "
-                   f"AXE {'YES' if armed else 'no '} "
-                   f"SK {nes[R.SKATEBOARD]}  "
+                   f"AXE {'YES' if armed else 'no '}  "
                    f"A/R {nes[R.AREA]}/{nes[R.ROUND]} "
                    f"CK {nes[R.CHECKPOINT]}",
            fill=(120, 255, 120) if armed else (255, 255, 255))
+    if boarding:
+        d.rectangle([196, 1, 254, 11], fill=(0, 90, 0))
+        d.text((199, 2), "* SKATE *", fill=(150, 255, 150))
+    else:
+        d.text((199, 2), "  skate -", fill=(110, 110, 110))
     d.text((3, 13), f"P x={px_x:6.1f} y={px_y:5.1f} scroll={nes[R.CAMERA]:3d} "
                     f"| E{n_enemy} F{n_fruit} I{n_item} "
                     f"B{n_block} S{n_shot} Z{n_zombie} "
@@ -255,6 +275,21 @@ def load_agent(path: str, net):
     return int(ck.get("steps", 0)), dropped
 
 
+def guess_stage_idx(start_state, start_round):
+    """0-based stage index for the one-hot: (area-1) * 4 + (round-1)."""
+    if start_state:
+        # saves/stages/stage_1-2.state -> "1-2"
+        stem = os.path.splitext(os.path.basename(start_state))[0]
+        tag = stem.replace("stage_", "").replace("round", "")
+        if "-" in tag:
+            try:
+                a, r = (int(x) for x in tag.split("-")[:2])
+                return (a - 1) * 4 + (r - 1)
+            except ValueError:
+                pass
+    return int(start_round or 0)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("checkpoint", nargs="?", default=None,
@@ -271,6 +306,15 @@ def main() -> None:
                          "Use 60 to watch at normal game speed.")
     ap.add_argument("--scale", type=int, default=3,
                     help="window zoom factor (default 3)")
+    ap.add_argument("--start-round", type=int, default=0,
+                    help="0-based stage to open: 0 = 1-1, 1 = 1-2 (第二关)")
+    ap.add_argument("--start-state", type=str, default=None,
+                   help="open this dumped save state instead of booting "
+                        "(e.g. saves/stages/stage_1-2.state)")
+    ap.add_argument("--stage-idx", type=int, default=None,
+                   help="which stage the one-hot tail should say we are in "
+                        "(0 = 1-1, 1 = 1-2, 4 = 2-1 ...).  Guessed from "
+                        "--start-state / --start-round if omitted.")
     args = ap.parse_args()
 
     net = None
@@ -308,8 +352,14 @@ def main() -> None:
         pass
 
     import env as _envmod
+    # the one-hot stage tail has to match what is on screen, or the policy
+    # thinks it is playing a different stage
+    stage_idx = args.stage_idx
+    if stage_idx is None:
+        stage_idx = guess_stage_idx(args.start_state, args.start_round)
+    print(f"stage one-hot index: {stage_idx}", flush=True)
     nes = NES(_envmod.ROM)
-    boot(nes)
+    boot(nes, start_round=args.start_round, start_state=args.start_state)
     start_lives = nes[R.LIVES]
     # Same curriculum as the training env: every episode starts with the axe
     # armed, otherwise a death means replaying the whole "go fetch the axe"
@@ -396,7 +446,7 @@ def main() -> None:
                 import torch
                 from env import ACTIONS
                 from enjoy import obs_tensor
-                obs = obs_tensor(nes)          # {"ram": (1, D), "img": (1, C, H, W)}
+                obs = obs_tensor(nes, stage_idx)   # {"ram": (1, D), ...}
                 with torch.no_grad():
                     idx = int(net(obs)[0].argmax())
                 # index -> controller bitmask (NOT the index itself!)

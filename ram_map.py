@@ -131,7 +131,9 @@ ITEM_IDS = (ID_ITEM,)
 # Born at the screen edge and moving towards the player.
 # (4 was flagged by the flawed stamina heuristic and has not been seen
 #  since -- kept, but marked doubtful in the overlay.)
-ENEMY_IDS = (ID_ENEMY, 9, 4)
+# 35/37/41: the octopus family of the water stages (user-identified from
+# the overlay screenshots, 2026-10-17).  41 takes two axe hits to die.
+ENEMY_IDS = (ID_ENEMY, 9, 4, 35, 37, 41)
 
 # Lethal on contact: touching one of these costs a LIFE.  Measured with
 # tools/probe_id4.py (agent-driven survey, 6 episodes): id 2 is completely
@@ -147,7 +149,13 @@ LETHAL_STATIC_IDS = (2,)
 #  65 spawns on a strict 768px grid -> checkpoint sign, not an obstacle.)
 OBSTACLE_IDS = (1, 2, 19, 20, 25, 48)
 
-# Born on the player: your own shot, its muzzle flash, shadow, ...
+# SELF: born on the player -- your own shot, its muzzle flash, shadow, ...
+# id 69 (measured 2026-10-17, tools session: model playthrough of 1-1):
+# spawns near the player's feet ONLY after he stands still a few frames,
+# drifts LEFT ~20 px over ~16 game frames at ground level (y 156-163),
+# harmless: no collision effect observed.  Matches the "stand still and a
+# cloud appears" bonus-stage mechanic (hidden warp cloud), so labelled
+# CLOUD? -- it is NOT part of the player.  Keep it out of ENEMY_IDS.
 SELF_IDS = (43, 69, ID_PROJECTILE)
 
 # Harmless decoration / never observed in the trajectory study.
@@ -158,6 +166,20 @@ OBJ_KINDS = {
     ID_ENEMY: ("ENEMY", (255, 70, 70)),
     9: ("ENEMY", (255, 70, 70)),
     4: ("ENEMY?", (255, 110, 90)),      # doubtful, see note above
+    # id 35 -- the OCTOPUS.  Named by the user from the picture (2026-10-17)
+    # and confirmed by motion: it cycles vertically between y = 115 and
+    # y = 240 (a 124 px sweep, measured over 300 frames of stage 1-2), which
+    # no scenery or pickup does.  Contact is lethal per the game's own rules
+    # (octopus = one of the "everything kills in one hit" enemies).  It was
+    # NOT in ENEMY_IDS before, which meant the policy literally could not
+    # see it -- no nearest-enemy feature, no throw target -- on the water
+    # stages where it is the main obstacle.  Added 2026-10-17.
+    35: ("OCTOPUS?", (255, 90, 160)),
+    # ids 37 / 41 -- more octopuses, same family (user-identified from the
+    # overlay screenshots, 2026-10-17: "?37 也是敌人，?41 也是章鱼，要打
+    # 两次才死").  Added to ENEMY_IDS at the same time as 35.
+    37: ("OCTOPUS?", (255, 90, 160)),
+    41: ("OCTO2HP?", (200, 90, 255)),       # two hits to kill, per the user
     ID_FRUIT_A: ("FRUIT", (255, 230, 60)),
     ID_FRUIT_B: ("FRUIT", (255, 230, 60)),
     ID_ITEM: ("ITEM", (180, 120, 255)),
@@ -189,7 +211,22 @@ OBJ_KINDS = {
     42: ("DECO", (170, 170, 170)),
     54: ("DECO", (170, 170, 170)),
     57: ("DECO", (170, 170, 170)),
-    59: ("DECO", (170, 170, 170)),
+    # id 59 -- the CLOUD PLATFORM (named from the user's screenshot,
+    # 2026-10-17: Higgins standing on one over the sea in 1-2).  NOT mere
+    # decoration: measured over 400 frames of 1-2, several slots drift
+    # LEFTWARD from x=320 at DIFFERENT speeds, each at a fixed height
+    # (y = 136 / 152 / 168).  They are the rideable moving clouds of the
+    # water stages.  Harmless to touch, so it stays out of the enemy and
+    # obstacle sets; the CNN sees the cloud pixels, so no extra obs
+    # feature was added for it (yet).
+    59: ("PLAT?", (120, 220, 255)),
+    # id 58 -- the second moving platform (user-identified from the overlay
+    # screenshot, 2026-10-17: "?58 是一个左右移动的平台").  Same family as 59
+    # but patrols LEFT-RIGHT instead of drifting left.  Rideable, harmless:
+    # stays out of enemy / obstacle sets; the CNN sees its pixels, so no obs
+    # feature (yet -- a nearest-platform feature is the real upgrade, not a
+    # label).
+    58: ("PLAT?", (120, 220, 255)),
     199: ("DECO", (170, 170, 170)),
 }
 UNKNOWN_KIND = ("?", (200, 200, 200))

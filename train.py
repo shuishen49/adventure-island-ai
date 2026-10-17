@@ -153,7 +153,13 @@ def _worker_loop(rank: int, conn, args, seed: int) -> None:
     the finished trajectories.
     """
     torch.set_num_threads(1)
-    env = AdventureIslandEnv(seed=seed, start_with_axe=not args.no_start_axe)
+    env = AdventureIslandEnv(seed=seed,
+                             start_with_axe=not args.no_start_axe,
+                             start_round=args.start_round,
+                             start_state=args.start_state,
+                             stage_pool=args.stage_pool,
+                             stage_weights=args.stage_weights,
+                             clear_ends_episode=args.clear_ends_episode)
     net = ActorCritic(OBS_DIM, N_ACTIONS, args.hidden)
     obs = env.reset(seed=seed)
     n_steps = args.steps_per_update
@@ -282,7 +288,12 @@ def train(args) -> None:
         obs_np = None
     else:
         envs = [AdventureIslandEnv(seed=args.seed + i,
-                                   start_with_axe=not args.no_start_axe)
+                                   start_with_axe=not args.no_start_axe,
+                                   start_round=args.start_round,
+                                   start_state=args.start_state,
+                                   stage_pool=args.stage_pool,
+                                   stage_weights=args.stage_weights,
+                                   clear_ends_episode=args.clear_ends_episode)
                 for i in range(args.nenvs)]
         obs_np = collate([e.reset(seed=args.seed + i)
                           for i, e in enumerate(envs)])
@@ -528,7 +539,57 @@ def parse_args():
                         "into the first egg itself (the real game).  Default "
                         "is to start every episode with the axe, which skips "
                         "the boring pre-axe phase and speeds up training")
+    p.add_argument("--start-round", type=int, default=0,
+                   help="0-based stage to start every episode in: 0 = 1-1 "
+                        "(default), 1 = 1-2 (第二关), 2 = 1-3 ...  The boot "
+                        "warps there by forcing $0038 while the stage is "
+                        "built (tools/make_round2_state.py)")
+    p.add_argument("--start-state", type=str, default=None,
+                   help="load this cynes save state at reset instead of "
+                        "booting (e.g. saves/round2_start_warp.state)")
+    p.add_argument("--stages", type=str, default=None,
+                   help="multi-stage curriculum: a weighted pool of stage "
+                        "save states, e.g. '1-2:0.7,1-1:0.3'.  Each episode "
+                        "draws one stage by weight (plan.md phase 3).  "
+                        "Overrides --start-round/--start-state.")
+    p.add_argument("--clear-ends-episode", action="store_true",
+                   help="end the episode (and pay +5) the moment the flag "
+                        "is cleared, instead of rolling into the tally")
     a = p.parse_args()
+
+    # "1-2:0.7,1-1:0.3" -> ([paths], [weights])
+    # Sorted into canonical stage order (1-1, 1-2, ... 8-4) so that the
+    # one-hot index always means area*4 + round, no matter how the stages
+    # were listed on the command line.  Before this the pool kept the CLI
+    # order, so "1-2:0.7,1-1:0.3" made one-hot 0 mean 1-2 -- and every
+    # playback tool that guesses the index from the file name (visualize.py)
+    # fed the opposite bit to the policy.  (2026-10-17)
+    a.stage_pool, a.stage_weights, stage_names = [], [], []
+    if a.stages:
+        for item in a.stages.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            name, _, w = item.partition(":")
+            name = name.strip()
+            stage_names.append((name, float(w) if w else 1.0))
+        stage_names.sort(key=lambda nw: tuple(int(p) for p in nw[0].split("-")))
+        for name, w in stage_names:
+            a.stage_pool.append(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "saves", "stages", f"stage_{name}.state"))
+            a.stage_weights.append(w)
+        for path in a.stage_pool:
+            if not os.path.exists(path):
+                p.error(f"no such stage save: {path}")
+        print("stage pool: " + ", ".join(
+            f"{n}={w:g}" for n, w in zip(
+                [os.path.basename(p)[6:-6] for p in a.stage_pool],
+                a.stage_weights)), flush=True)
+
+    if a.start_round or a.start_state:
+        print(f"stage start: round={a.start_round} state={a.start_state}",
+              flush=True)
     if a.workers > 0:
         # one environment per worker process
         a.nenvs = a.workers

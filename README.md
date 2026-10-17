@@ -1,10 +1,16 @@
 # adventure-island-ai
 
-用**纯 CPU 的 PPO** 训练 AI 玩通 FC《冒险岛》（Adventure Island, NES）**第一关（Round 1-1）**。
+用**纯 CPU 的 PPO** 训练 AI 玩通 FC《冒险岛》（Adventure Island, NES）**第一关（Round 1-1）与第二关（Round 1-2）**。
 
 技术栈：[cynes](https://github.com/Youlixx/cynes) NES 模拟器（可读 RAM）+ 手动逆向的游戏内存地图 + 自研 Gym 风格环境。观测把 **CNN 视觉特征**（80×86 灰度帧堆叠）与 **RAM 数值特征**融合——因为平台、坑、悬崖这些地形信息只存在于像素里，纯 RAM 观测的 agent 永远学不会跳。
 
-最终模型（`runs/ppo_v10/ppo_final.pt`，1500 万 env steps）**8/8 局稳定通关 Round 1-1**，每局约 80 秒游戏时间，最远推进 5776 px。
+第一关模型（`runs/ppo_v10/ppo_final.pt`，1500 万 env steps）**8/8 局稳定通关 Round 1-1**，每局约 80 秒游戏时间，最远推进 5776 px。
+
+第二关模型（`models/ppo_1-2_clear_8M.pt`，800 万 env steps，1-2/1-1 混合课程）**已拿下 Round 1-2**：原生环境实测平均推进 5961 px、12 局 8 局跑满全程，无头评估 12 局 4 局真正通关（关卡全长约 6800 px）。下面是它的一次完整通关实录（带实时标注，右侧说明见 [历史记录/训练曲折史.md](历史记录/训练曲折史.md)）。
+
+<p align="center">
+  <img src="docs/images/1-2_clear.gif" width="70%" alt="AI 通关第二关 Round 1-2"/>
+</p>
 
 ## 成果
 
@@ -16,6 +22,17 @@
 | 单局时长 | 76 – 82 秒游戏时间 |
 | 动作空间 | 10 个离散动作 |
 | 观测 | 37 维 RAM 向量 + 80×86×2 灰度帧堆叠 |
+
+### 第二关（Round 1-2，8M 步）
+
+| 指标 | 数值 |
+|------|------|
+| 训练量 | 8,005,632 env steps（124.5 分钟，48 个 CPU 工作进程） |
+| 课程 | `--stages "1-2:0.7,1-1:0.3"` 混合采样，开局预装备斧头 |
+| 原生环境实测 | 平均推进 **5961 px**，12 局 8 局跑满 6500+ px（关卡全长 ~6800 px） |
+| 无头评估 | 12 局 **4 局真正通关**，其余多死在 5186 px（终点前最后一处） |
+| 观测 | 69 维 RAM 向量（含 32 关 one-hot）+ 80×86×2 灰度帧堆叠 |
+| 模型 | `models/ppo_1-2_clear_8M.pt`（回放需 `--stage-idx 0`，见历史记录） |
 
 <p align="center">
   <img src="docs/images/stage_clear.png" width="45%" alt="STAGE CLEAR"/>
@@ -49,6 +66,11 @@ export AI_ROM="/path/to/Adventure Island (USA).nes"       # Linux/macOS
 ```sh
 # 观看已训练模型通关第一关（会开游戏窗口）
 python enjoy.py runs/ppo_v10/ppo_final.pt --deterministic
+
+# 观看第二关模型（必须从 1-2 存档起步、one-hot 显式给 0——
+# 该检查点训练时的关卡顺序与文件名推断相反，原因见 历史记录/训练曲折史.md 第 8 节）
+python visualize.py models/ppo_1-2_clear_8M.pt \
+    --start-state saves/stages/stage_1-2.state --stage-idx 0
 
 # 无头评估：N 局贪心策略，报告最远距离/死亡/吃道具/拿斧头
 python evaluate.py runs/ppo_v10/ppo_final.pt --episodes 8
@@ -143,6 +165,8 @@ record.py              把一局录成 GIF + Contact Sheet
 ram_map.py             RAM 地址常量、对象槽解码、摄像机跟踪
 tools/                 111 个逆向探测脚本（见下表）
 runs/ppo_v10/          发布的第一关模型 + 训练曲线
+models/                发布的第二关模型（ppo_1-2_clear_8M.pt）+ 训练曲线
+历史记录/               训练曲折史：踩坑 → 误判 → 决定性实验 → 修复
 videos/                通关录像（mp4，GitHub 仅提供下载）
 docs/images/           README 截图 + 自动播放的通关 GIF
 ```
@@ -164,6 +188,13 @@ docs/images/           README 截图 + 自动播放的通关 GIF
 | `probe_backwards.py` | 后退漏洞（ agent 躲左上角） |
 | `inspect_score.py` | 分数 BCD 格式 |
 | `record_clear.py` / `record_clear_sound.py` | 通关视频录制（本仓库视频即由它们产出） |
+| `make_round2_state.py` / `probe_rounds.py` / `probe_all_stages.py` | RAM 跳关：32 关起点存档与探测 |
+| `cluster_stages.py` | 按真实世界推进聚类 32 关 → 30 种不同关卡 |
+| `probe_skateboard.py` | 滑板挡刀实测（能挡一击，掉悬崖不救） |
+| `widen_net.py` | 观测扩列时给旧检查点拼接零权重（热启动） |
+| `eval_native.py` | 原生环境基准评估——播放端与训练端对不上时以它为准 |
+| `record_clear_2view.py` | 双视角通关录制：玩家视角（标注）+ agent 视角（80×86 马赛克） |
+| `jsnes_replay2.mjs` / `mux_video.py` | jsnes 重放同一串输入抓原声 + 音画合流 |
 
 ## 性能
 
@@ -173,7 +204,8 @@ docs/images/           README 截图 + 自动播放的通关 GIF
 
 ## 已知限制
 
-- **只通关了 Round 1-1**；1-2 及以后轮次尚未攻克（需要更多训练与奖励设计）。
+- **Round 1-1 与 Round 1-2 已通关**；1-3 及更后面的轮次尚未攻克（需要更多训练与奖励设计）。
+- 第二关的通关率还有波动：原生环境 12 局 8 局跑满全程，无头评估 12 局 4 局通关，剩下的大多死在终点前 **5186 px** 那一处（还没定位是什么）。
 - 游戏完全确定性：不插入随机 warmup 的话，8 个并行世界会跑出字节级相同的轨迹（实测：无 warmup 时 20 局评估全是同一局的 1975 px）。reset 时会插入 ≤90 帧随机操作。
 - `start_with_axe` 是课程塑造；真实对局需要自己捡斧头。
 - cynes 的 APU 只计时不发声，`record_clear_sound.py` 是用 jsnes 回放同一串输入录的原版 BGM。

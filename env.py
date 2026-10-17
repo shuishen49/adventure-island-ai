@@ -85,11 +85,22 @@ N_SLOTS_SCANNED = 16        # slots 1..15 (0 = player).  Slot 15 is a NORMAL
 FRAME_SKIP = 4
 MAX_STEPS = 4500          # ~5 min of game time at 60fps / skip 4
 
+# --- multi-stage curriculum ---------------------------------------------
+# One policy for all 32 stages (8 areas x 4 rounds).  The observation
+# carries a one-hot "which stage am I in" tail so the shared trunk can
+# specialise per stage; see plan.md section 2 decision 1.
+N_STAGES = 32
+WARMUP_RETRIES = 3          # re-roll the warm-up if it kills us
+# Clearing the flag is the goal of a stage (plan.md phase 1), not a
+# by-product: symmetric with the -5.0 death penalty.
+CLEAR_GAIN = 5.0
+
 OBS_DIM = (8                             # player
            + K_NEAREST_ENEMIES * 4       # nearest object slots
            + 4                           # global
            + 6                           # nearest enemy / fruit dx,dy,seen
-           + 3)                          # nearest item (axe!) dx,dy,seen
+           + 3                           # nearest item (axe!) dx,dy,seen
+           + N_STAGES)                   # one-hot: which stage is this
 
 # --- reward weights ----------------------------------------------------
 # The axe is the single most important pickup in the game: without it the
@@ -100,6 +111,15 @@ OBS_DIM = (8                             # player
 # worth less but still absorbs one hit.
 WEAPON_GAIN = 3.0           # picked up the axe
 SKATE_GAIN = 1.5            # picked up the skateboard
+# 2026-10-17: the skateboard absorbs ONE hit -- verified with
+# tools/probe_skateboard.py: walking into an enemy kills you at frame 504
+# with $006E = 0, but holding $006E = 1 you walk through the very same
+# enemy and survive.  It does NOT save you from a fall: dropping into the
+# sea on 1-2 kills you at frame 238 bare and 177 with the board held.
+# So "board absorbed a hit" is worth almost as much as a life -- pay for it
+# explicitly, otherwise the agent only ever sees the board *appearing*
+# (SKATE_GAIN) and never learns what it was good for.
+SKATE_SAVE = 2.0            # the board took a hit that would have killed us
 SCORE_SCALE = 0.01          # per score point (fruit, kills, ...)
 KILL_GAIN = 1.0             # an enemy slot died right next to us
 SHOT_MEMORY = 3             # decision steps an axe stays "in flight"
@@ -152,6 +172,72 @@ def to_grey(frame: np.ndarray) -> np.ndarray:
     return g[::DOWNSAMPLE, ::DOWNSAMPLE].astype(np.uint8)
 
 
+def control_live(nes, frames: int = 30) -> bool:
+    """Is the player under our control right now?  (state is restored)
+
+    Idle first, then RIGHT: right after a stage clear the game walks
+    Higgins right by itself, so "RIGHT moved him" alone is a false
+    positive there.
+    """
+    st = nes.save()
+    x0 = R.px(R.read_obj_world_x(nes, R.PLAYER_SLOT))
+    nes.controller = 0
+    for _ in range(frames):
+        nes.step()
+    x_idle = R.px(R.read_obj_world_x(nes, R.PLAYER_SLOT))
+    nes.load(st)
+    nes.controller = NES_INPUT_RIGHT
+    for _ in range(frames):
+        nes.step()
+    nes.controller = 0
+    x_right = R.px(R.read_obj_world_x(nes, R.PLAYER_SLOT))
+    nes.load(st)
+    return abs(x_idle - x0) < 2.0 and (x_right - x0) > 5.0
+
+
+def wait_for_picture(nes, max_frames: int = 400) -> None:
+    """Step until the stage has finished fading in.
+
+    Right after a stage load the PPU is still off: the frame is PURE BLACK
+    for ~180 frames while the game logic already runs and the player
+    already answers the controller.  A state saved in there would start
+    every episode with ~45 black observations -- and would look like
+    "still loading" in a screenshot.
+    """
+    for _ in range(max_frames):
+        nes.controller = 0
+        if float(np.asarray(nes.step()).mean()) > 30.0:
+            return
+
+
+def boot_to_round(nes, round_value: int) -> None:
+    """Title -> START with $0038 forced, then wait for a playable stage.
+
+    The game reads the round register while the stage is being built, so
+    hammering it through the init loads that stage's layout (spawn y:
+    152 for round 0, 80 for round 1, 192 for round 2).
+    """
+    nes.step(frames=300)                       # title screen appears
+    nes.controller = NES_INPUT_START
+    for _ in range(90):
+        nes[R.ROUND] = round_value
+        nes.step()
+    nes.controller = 0
+    for _ in range(60):                        # up to 600 frames
+        if control_live(nes):
+            break
+        for _ in range(10):
+            nes.controller = 0
+            nes.step()
+    wait_for_picture(nes)                      # out of the black fade-in
+
+
+def load_state_file(path: str) -> np.ndarray:
+    """Read a dumped cynes state.  ``load`` wants a *writeable* array."""
+    with open(path, "rb") as fh:
+        return np.frombuffer(fh.read(), dtype=np.uint8).copy()
+
+
 class AdventureIslandEnv:
     """Headless cynes environment with a RAM feature vector observation."""
 
@@ -159,11 +245,49 @@ class AdventureIslandEnv:
 
     def __init__(self, rom_path: str = ROM, frame_skip: int = FRAME_SKIP,
                  seed: Optional[int] = None,
-                 start_with_axe: bool = True) -> None:
+                 start_with_axe: bool = True,
+                 start_round: int = 0,
+                 start_state: Optional[str] = None,
+                 stage_pool: Optional[list[str]] = None,
+                 stage_weights: Optional[list[float]] = None,
+                 stage_index: Optional[int] = None,
+                 clear_ends_episode: bool = False) -> None:
         self.rom_path = rom_path
         self.frame_skip = frame_skip
         self.rng = np.random.default_rng(seed)
         self.start_with_axe = start_with_axe
+        self.clear_ends_episode = clear_ends_episode
+        # Which stage an episode starts in.  $0038 is 0-based: 0 is stage
+        # 1-1, 1 is stage 1-2 (第二关) -- the game bumps it to 1 the moment
+        # 1-1 is cleared (tools/make_round2_state.py).  Either give the
+        # register value here (the boot warps into it) or hand over a state
+        # file dumped by that tool.
+        self.start_round = start_round
+        self._start_state = None
+        if start_state is not None:
+            # cynes wants a *writeable* uint8 array, not raw bytes
+            with open(start_state, "rb") as fh:
+                self._start_state = np.frombuffer(fh.read(),
+                                                  dtype=np.uint8).copy()
+
+        # --- multi-stage curriculum -----------------------------------
+        # A pool of per-stage save states; reset() draws one by weight.
+        # 32 states x ~5 KB is nothing, so they all stay in memory.
+        self.stage_pool: list[np.ndarray] = []
+        self.stage_labels: list[str] = []
+        if stage_pool:
+            for path in stage_pool:
+                self.stage_pool.append(load_state_file(path))
+                self.stage_labels.append(
+                    os.path.splitext(os.path.basename(path))[0])
+            w = np.asarray(stage_weights or [1.0] * len(stage_pool),
+                           dtype=np.float64)
+            self.stage_weights = (w / w.sum()).tolist()
+        else:
+            self.stage_weights = []
+        # Which stage the CURRENT episode is in -- the 32-way one-hot at
+        # the end of the observation is built from this.
+        self._stage_idx = stage_index if stage_index is not None else 0
 
         self._nes = NES(rom_path)
         self._save_state = None
@@ -176,14 +300,79 @@ class AdventureIslandEnv:
     # ------------------------------------------------------------------
     # bootstrapping
     # ------------------------------------------------------------------
-    def _reset_internal_state(self) -> None:
-        """Boot the game once and snapshot the state for fast resets."""
+    def _control_live(self, frames: int = 30) -> bool:
+        """Is the player under our control?  (state is restored afterwards)
+
+        Idle first, then RIGHT: right after a stage clear the game walks
+        Higgins right by itself, so "RIGHT moved him" alone is a false
+        positive.  See tools/make_round2_state.py.
+        """
+        nes = self._nes
+        st = nes.save()
+        x0 = R.px(R.read_obj_world_x(nes, R.PLAYER_SLOT))
+        nes.controller = 0
+        for _ in range(frames):
+            nes.step()
+        x_idle = R.px(R.read_obj_world_x(nes, R.PLAYER_SLOT))
+        nes.load(st)
+        nes.controller = NES_INPUT_RIGHT
+        for _ in range(frames):
+            nes.step()
+        nes.controller = 0
+        x_right = R.px(R.read_obj_world_x(nes, R.PLAYER_SLOT))
+        nes.load(st)
+        return abs(x_idle - x0) < 2.0 and (x_right - x0) > 5.0
+
+    def _wait_for_picture(self, max_frames: int = 400) -> None:
+        """Step until the stage has finished fading in.
+
+        Right after a stage load the PPU is still off: the frame is PURE
+        BLACK for ~180 frames while the game logic already runs and the
+        player already answers the controller.  A state saved in there
+        would start every episode with ~45 black observations -- and would
+        look like "still loading" in a screenshot.
+        """
+        nes = self._nes
+        for _ in range(max_frames):
+            nes.controller = 0
+            if float(np.asarray(nes.step()).mean()) > 30.0:
+                return
+
+    def _boot_to_round(self, round_value: int) -> None:
+        """Title -> START with $0038 forced, then wait for real control.
+
+        The game reads the round register while the stage is being built,
+        so hammering it through the init loads that stage's layout
+        (spawn y: 152 for round 0, 80 for round 1, 192 for round 2).
+        """
         nes = self._nes
         nes.step(frames=300)                       # title screen appears
         nes.controller = NES_INPUT_START
-        nes.step(frames=60)
+        for _ in range(90):
+            nes[R.ROUND] = round_value
+            nes.step()
         nes.controller = 0
-        nes.step(frames=60)                        # let gameplay settle
+        for _ in range(60):                        # up to 600 frames
+            if self._control_live():
+                break
+            for _ in range(10):
+                nes.controller = 0
+                nes.step()
+        self._wait_for_picture()                   # out of the black fade-in
+
+    def _reset_internal_state(self) -> None:
+        """Boot the game once and snapshot the state for fast resets."""
+        nes = self._nes
+        if self._start_state is not None:
+            nes.load(self._start_state)
+        elif self.start_round > 0:
+            self._boot_to_round(self.start_round)
+        else:
+            nes.step(frames=300)                       # title screen appears
+            nes.controller = NES_INPUT_START
+            nes.step(frames=60)
+            nes.controller = 0
+            nes.step(frames=60)                        # let gameplay settle
         self._start_lives = nes[R.LIVES]
         self._save_state = nes.save()
         self._img = np.zeros((IMG_STACK, IMG_H, IMG_W), dtype=np.uint8)
@@ -191,6 +380,11 @@ class AdventureIslandEnv:
     # ------------------------------------------------------------------
     # gym API
     # ------------------------------------------------------------------
+    def _died(self) -> bool:
+        """Death flag, excluding the flag being set during a stage clear."""
+        nes = self._nes
+        return nes[R.DEATH] != 0 and nes[R.STAGE_COMPLETE] == 0
+
     def _warmup(self) -> None:
         """Play a few random frames so episodes do not start identically.
 
@@ -208,10 +402,34 @@ class AdventureIslandEnv:
     def reset(self, seed: Optional[int] = None) -> dict[str, np.ndarray]:
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-        self._nes.load(self._save_state)
-        if getattr(self, "_activity", None) is not None:
-            self._activity.reset()          # new episode: disarm zombies
-        self._warmup()
+
+        # --- pick the stage for this episode --------------------------
+        if self.stage_pool:
+            i = int(self.rng.choice(len(self.stage_pool),
+                                    p=self.stage_weights))
+            self._stage_idx = i
+            state = self.stage_pool[i]
+        else:
+            state = self._save_state
+
+        # --- warm up, re-rolling if it kills us -----------------------
+        # tools/probe_all_stages.py: on 20 of the 32 stages, simply
+        # holding RIGHT for 4 s is fatal.  The warm-up is the ONLY thing
+        # breaking the game's determinism (without it all 8 parallel
+        # worlds run byte-identical trajectories), so instead of setting
+        # its length to 0 we re-roll it: a warm-up death is discarded and
+        # never becomes an episode.
+        for attempt in range(WARMUP_RETRIES + 1):
+            self._nes.load(state)
+            if getattr(self, "_activity", None) is not None:
+                self._activity.reset()      # new episode: disarm zombies
+            self._warmup()
+            if not self._died():
+                break
+            if attempt == WARMUP_RETRIES:
+                self._nes.load(state)       # last resort: clean start
+                if getattr(self, "_activity", None) is not None:
+                    self._activity.reset()
         if self.start_with_axe:
             # Curriculum: arm the axe right after the reset so every episode
             # starts with the tool already in hand.  Verified to work -- see
@@ -240,6 +458,7 @@ class AdventureIslandEnv:
         self._action = 0
         self._kills = 0
         self._shot_steps = 0
+        self._prev_stage_complete = self._nes[R.STAGE_COMPLETE]
         return self._obs()
 
     # ------------------------------------------------------------------
@@ -370,7 +589,12 @@ class AdventureIslandEnv:
             grav / 64.0,
             nes[R.STAMINA] / 16.0,
             float(nes[R.WEAPON] > 0),      # holding the axe?
-            nes[R.SKATEBOARD] / 255.0,
+            # The skateboard is a 0/1 flag (verified: $006E only ever
+            # reads 0 or 1 -- tools/probe_skateboard.py).  Scaling it by
+            # 1/255 turned it into 0.0 / 0.0039, i.e. a feature too small
+            # for the net to ever notice, which hid the fact that the flag
+            # means "one free hit".  Feed it as a clean 0/1 instead.
+            float(nes[R.SKATEBOARD] > 0),
             float(nes[R.BTN_A_FLAG] > 0),
         ], dtype=np.float32)
 
@@ -398,7 +622,12 @@ class AdventureIslandEnv:
             np.clip(i_dx / 256.0, -2, 2), i_dy / 256.0, i_seen,
         ], dtype=np.float32)
 
-        return np.concatenate([player, enemies, glob, kind])
+        # Which stage is this?  Appended LAST so that widening an old
+        # checkpoint is a plain concat of zeros (tools/widen_net.py).
+        stage = np.zeros(N_STAGES, dtype=np.float32)
+        stage[int(self._stage_idx) % N_STAGES] = 1.0
+
+        return np.concatenate([player, enemies, glob, kind, stage])
 
     def _near_hits(self) -> int:
         """How often an axe of ours is flying right through an enemy.
@@ -526,6 +755,14 @@ class AdventureIslandEnv:
         dead = dying or lives < self._start_lives
         death_r = -5.0 if dead else 0.0
 
+        # --- stage clear ---------------------------------------------
+        # plan.md phase 1: clearing the flag IS the training target, not a
+        # side effect.  Fires on the 0 -> non-zero edge of $003C so it is
+        # paid exactly once.
+        sc = nes[R.STAGE_COMPLETE]
+        cleared = sc != 0 and self._prev_stage_complete == 0
+        clear_r = CLEAR_GAIN if cleared else 0.0
+
         # --- stall detection -----------------------------------------
         # The second way the policy dodged the snails was to simply stop:
         # hold left+jump against the screen edge and burn the clock.  Left
@@ -543,8 +780,17 @@ class AdventureIslandEnv:
         if weapon > self._last_weapon and not area_changed and not dead:
             weapon_r = WEAPON_GAIN
         skate_r = 0.0
-        if skate > self._last_skate and not area_changed and not dead:
-            skate_r = SKATE_GAIN
+        skate_gained = skate_lost = False
+        if not area_changed and not dead:
+            if skate > self._last_skate:
+                skate_r = SKATE_GAIN
+                skate_gained = True
+            elif skate < self._last_skate:
+                # The board is gone but we are still alive: it ate a hit
+                # for us.  This is the only signal that teaches what the
+                # board is for -- without it the flag only ever *appears*.
+                skate_r = SKATE_SAVE
+                skate_lost = True
 
         # Killed something?  Paid once per dead enemy slot.
         kills = 0 if dead else self._count_kills()
@@ -569,7 +815,7 @@ class AdventureIslandEnv:
 
         reward = (progress_r + score_r + stamina_r + death_r
                   + weapon_r + skate_r + kill_r + near_r + aim_r
-                  + stall_r - 0.001)
+                  + stall_r + clear_r - 0.001)
 
         self._last_progress = progress
         self._last_score = score
@@ -579,14 +825,21 @@ class AdventureIslandEnv:
         self._last_area = nes[R.AREA]
         self._last_round = nes[R.ROUND]
         self._last_checkpoint = nes[R.CHECKPOINT]
+        self._prev_stage_complete = sc
 
         info = {"x_progress": self._x_progress, "score": score,
                 "stamina": sta, "lives": lives, "death": bool(dead),
                 "weapon": weapon, "got_axe": bool(weapon_r),
-                "got_skate": bool(skate_r), "stalled": bool(stalled),
-                "kills": kills, "near": near,
+                "got_skate": skate_gained,
+                "skate": int(skate > 0),
+                "skate_saved": skate_lost,
+                "stalled": bool(stalled),
+                "kills": kills, "near": near, "cleared": bool(cleared),
+                "stage": (self.stage_labels[self._stage_idx]
+                          if self.stage_pool else None),
                 "best_progress": self._best_progress}
-        return reward, info, dead or stalled
+        return reward, info, dead or stalled or (
+            cleared and self.clear_ends_episode)
 
 
 if __name__ == "__main__":

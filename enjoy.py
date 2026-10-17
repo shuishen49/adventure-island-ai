@@ -62,16 +62,22 @@ def push_img(nes, frame) -> None:
     img[-1] = to_grey(frame)
 
 
-def build_obs(nes) -> dict[str, np.ndarray]:
-    """Same observation as the training env: {"ram": ..., "img": ...}."""
+def build_obs(nes, stage_idx: int = 0) -> dict[str, np.ndarray]:
+    """Same observation as the training env: {"ram": ..., "img": ...}.
+
+    ``stage_idx`` selects the one-hot stage tail (0 = 1-1, 1 = 1-2, ...).
+    It must match the stage on screen or the policy sees the wrong one-hot
+    and behaves like it is somewhere else.
+    """
     import env as E  # reuse internals without owning an emulator
 
     class _Shim:
         """Minimal duck-type stand-in exposing only what we need."""
 
-        def __init__(self, nes):
+        def __init__(self, nes, stage_idx=0):
             self._nes = nes
             self._start_lives = nes[R.LIVES]
+            self._stage_idx = stage_idx
             # A fresh CameraTracker every call would report progress ~0 on
             # every frame -- a train/test mismatch that cripples the policy.
             self._cam = _cam_for(nes)
@@ -82,14 +88,14 @@ def build_obs(nes) -> dict[str, np.ndarray]:
         _track_slots = E.AdventureIslandEnv._track_slots
         _is_zombie = E.AdventureIslandEnv._is_zombie
 
-    shim = _Shim(nes)
+    shim = _Shim(nes, stage_idx)
     return {"ram": E.AdventureIslandEnv._build_obs(shim),
             "img": _img_for(nes).copy()}
 
 
-def obs_tensor(nes) -> dict[str, "torch.Tensor"]:
+def obs_tensor(nes, stage_idx: int = 0) -> dict[str, "torch.Tensor"]:
     import torch
-    o = build_obs(nes)
+    o = build_obs(nes, stage_idx)
     return {"ram": torch.as_tensor(o["ram"], dtype=torch.float32).unsqueeze(0),
             "img": torch.as_tensor(o["img"], dtype=torch.uint8).unsqueeze(0)}
 
@@ -118,6 +124,9 @@ def main() -> None:
     nes.step(frames=60)
     nes.controller = 0
     nes.step(frames=60)
+    # env.reset() arms the axe on every episode; the policy is NOT invariant
+    # to it (1-2: 5961 px with the axe vs 308 px without).  Match training.
+    nes[R.WEAPON] = 1
 
     reset_cam(nes)
     frame = 0
@@ -132,7 +141,11 @@ def main() -> None:
                     action = int(torch.distributions.Categorical(
                         logits=logits).sample())
         nes.controller = ACTIONS[action][0]
-        push_img(nes, np.asarray(nes.step(), dtype=np.uint8))
+        buf = np.asarray(nes.step(), dtype=np.uint8)
+        # one push per decision: env.step() runs frame_skip=4 frames and
+        # keeps only the last one, so the trained stack is 4 frames apart.
+        if frame % 4 == 3:
+            push_img(nes, buf)
         frame += 1
 
 
