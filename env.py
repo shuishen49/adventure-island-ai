@@ -95,12 +95,13 @@ WARMUP_RETRIES = 3          # re-roll the warm-up if it kills us
 # by-product: symmetric with the -5.0 death penalty.
 CLEAR_GAIN = 5.0
 
-OBS_DIM = (8                             # player
+OBS_DIM = (9                             # player (incl. fireball bit)
            + K_NEAREST_ENEMIES * 4       # nearest object slots
            + 4                           # global
            + 6                           # nearest enemy / fruit dx,dy,seen
            + 3                           # nearest item (axe!) dx,dy,seen
-           + N_STAGES)                   # one-hot: which stage is this
+           + N_STAGES                    # one-hot: which stage is this
+           + 1)                          # invincible (fairy puff, id 199)
 
 # --- reward weights ----------------------------------------------------
 # The axe is the single most important pickup in the game: without it the
@@ -111,6 +112,23 @@ OBS_DIM = (8                             # player
 # worth less but still absorbs one hit.
 WEAPON_GAIN = 3.0           # picked up the axe
 SKATE_GAIN = 1.5            # picked up the skateboard
+# A 1UP is worth real progress in a game this lethal: the observation
+# carries (lives - start)/4, but until 2026-10-17 the reward only paid
+# for LOSING a life (-5), never for gaining one -- so a hidden-egg 1UP
+# was invisible to the optimiser.  Paid once on the rising edge.
+LIFE_GAIN = 2.0             # gained an extra life
+# $006D is a weapon TYPE: 1 = axe, 2 = FIREBALL (measured 2026-10-17,
+# tools/probe_fireball.py: same object id 66, but reach 270 px vs 186 px,
+# and the wiki says it is the only weapon that breaks rocks).  It only
+# comes from HIDDEN power-up eggs, so it is rare -- pay more than the axe.
+FIRE_GAIN = 4.0             # upgraded axe -> fireball
+# 2026-10-17: object id 199 is the white fairy puff that trails the
+# player while INVINCIBLE (tools/probe_fairy_inv.py: an enemy pinned
+# onto the player does NOT set the death flag while 199 is on stage,
+# 2/2; the same poke kills without it, 2/2).  The puff only exists
+# after the fairy pickup has been grabbed, so pay on its rising edge.
+INV_GAIN = 3.0              # grabbed the invincibility fairy
+FAIRY_ID = 199
 # 2026-10-17: the skateboard absorbs ONE hit -- verified with
 # tools/probe_skateboard.py: walking into an enemy kills you at frame 504
 # with $006E = 0, but holding $006E = 1 you walk through the very same
@@ -374,6 +392,7 @@ class AdventureIslandEnv:
             nes.controller = 0
             nes.step(frames=60)                        # let gameplay settle
         self._start_lives = nes[R.LIVES]
+        self._last_lives = self._start_lives
         self._save_state = nes.save()
         self._img = np.zeros((IMG_STACK, IMG_H, IMG_W), dtype=np.uint8)
 
@@ -445,6 +464,9 @@ class AdventureIslandEnv:
         self._last_stamina = self._nes[R.STAMINA]
         self._last_weapon = self._nes[R.WEAPON]
         self._last_skate = self._nes[R.SKATEBOARD]
+        self._last_inv = any(
+            int(self._nes[R.OBJ.id + R.OBJ.STRIDE * s]) == FAIRY_ID
+            for s in range(0, 16))
         self._last_area = self._nes[R.AREA]
         self._last_round = self._nes[R.ROUND]
         self._last_checkpoint = self._nes[R.CHECKPOINT]
@@ -588,7 +610,12 @@ class AdventureIslandEnv:
             spd / 64.0,
             grav / 64.0,
             nes[R.STAMINA] / 16.0,
-            float(nes[R.WEAPON] > 0),      # holding the axe?
+            float(nes[R.WEAPON] > 0),      # holding any weapon?
+            # $006D is a weapon TYPE (0 none / 1 axe / 2 fireball) and both
+            # projectiles share object id 66 -- without this bit the policy
+            # cannot tell a fireball from an axe.  The fireball reaches
+            # ~270 px vs ~186 px and is the only thing that breaks rocks.
+            float(nes[R.WEAPON] >= 2),
             # The skateboard is a 0/1 flag (verified: $006E only ever
             # reads 0 or 1 -- tools/probe_skateboard.py).  Scaling it by
             # 1/255 turned it into 0.0 / 0.0039, i.e. a feature too small
@@ -627,7 +654,17 @@ class AdventureIslandEnv:
         stage = np.zeros(N_STAGES, dtype=np.float32)
         stage[int(self._stage_idx) % N_STAGES] = 1.0
 
-        return np.concatenate([player, enemies, glob, kind, stage])
+        # 2026-10-17: object id 199 is the white "fairy puff" that trails
+        # the player while INVINCIBLE.  Decisive test
+        # (tools/probe_fairy_inv.py): with 199 on stage an enemy pinned
+        # onto the player does NOT set the death flag (2/2); without it
+        # the same poke kills (2/2).  So "slot 199 present" IS the
+        # invincibility state -- no timer byte exists in RAM.
+        inv = any(int(nes[R.OBJ.id + R.OBJ.STRIDE * s]) == 199
+                  for s in range(0, 16))
+        return np.concatenate(
+            [player, enemies, glob, kind, stage,
+             np.array([float(inv)], dtype=np.float32)])
 
     def _near_hits(self) -> int:
         """How often an axe of ours is flying right through an enemy.
@@ -777,8 +814,15 @@ class AdventureIslandEnv:
 
         # --- the important part: picking up the axe -------------------
         weapon_r = 0.0
+        fire_gained = False
         if weapon > self._last_weapon and not area_changed and not dead:
             weapon_r = WEAPON_GAIN
+        # axe -> FIREBALL upgrade ($006D 1 -> 2).  Same object id 66 in the
+        # air, but longer reach and the only thing that breaks rocks.
+        if (self._last_weapon < 2 <= weapon
+                and not area_changed and not dead):
+            weapon_r += FIRE_GAIN
+            fire_gained = True
         skate_r = 0.0
         skate_gained = skate_lost = False
         if not area_changed and not dead:
@@ -791,6 +835,22 @@ class AdventureIslandEnv:
                 # board is for -- without it the flag only ever *appears*.
                 skate_r = SKATE_SAVE
                 skate_lost = True
+
+        # --- extra life (1UP), see LIFE_GAIN above --------------------
+        life_r = 0.0
+        life_gained = False
+        if lives > self._last_lives and not area_changed and not dead:
+            life_r = LIFE_GAIN
+            life_gained = True
+
+        # --- invincibility (fairy puff 199), see INV_GAIN above -------
+        inv = any(int(nes[R.OBJ.id + R.OBJ.STRIDE * s]) == FAIRY_ID
+                  for s in range(0, 16))
+        inv_r = 0.0
+        inv_gained = False
+        if inv and not self._last_inv and not area_changed and not dead:
+            inv_r = INV_GAIN
+            inv_gained = True
 
         # Killed something?  Paid once per dead enemy slot.
         kills = 0 if dead else self._count_kills()
@@ -814,14 +874,16 @@ class AdventureIslandEnv:
                 self._aim_cd = THROW_AIM_CD
 
         reward = (progress_r + score_r + stamina_r + death_r
-                  + weapon_r + skate_r + kill_r + near_r + aim_r
-                  + stall_r + clear_r - 0.001)
+                  + weapon_r + skate_r + life_r + inv_r + kill_r + near_r
+                  + aim_r + stall_r + clear_r - 0.001)
 
         self._last_progress = progress
         self._last_score = score
         self._last_stamina = sta
         self._last_weapon = weapon
         self._last_skate = skate
+        self._last_lives = lives
+        self._last_inv = inv
         self._last_area = nes[R.AREA]
         self._last_round = nes[R.ROUND]
         self._last_checkpoint = nes[R.CHECKPOINT]
@@ -830,9 +892,12 @@ class AdventureIslandEnv:
         info = {"x_progress": self._x_progress, "score": score,
                 "stamina": sta, "lives": lives, "death": bool(dead),
                 "weapon": weapon, "got_axe": bool(weapon_r),
+                "got_fire": fire_gained, "fire": int(weapon >= 2),
                 "got_skate": skate_gained,
                 "skate": int(skate > 0),
                 "skate_saved": skate_lost,
+                "got_life": life_gained,
+                "got_inv": inv_gained, "invincible": int(inv),
                 "stalled": bool(stalled),
                 "kills": kills, "near": near, "cleared": bool(cleared),
                 "stage": (self.stage_labels[self._stage_idx]

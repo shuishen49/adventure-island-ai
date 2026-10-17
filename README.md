@@ -1,6 +1,6 @@
 # adventure-island-ai
 
-用**纯 CPU 的 PPO** 训练 AI 玩通 FC《冒险岛》（Adventure Island, NES）**第一关（Round 1-1）与第二关（Round 1-2）**。
+用**纯 CPU 的 PPO** 训练 AI 玩通 FC《冒险岛》（Adventure Island, NES）**第一关（Round 1-1）、第二关（Round 1-2）与第三关（Round 1-3）**。
 
 技术栈：[cynes](https://github.com/Youlixx/cynes) NES 模拟器（可读 RAM）+ 手动逆向的游戏内存地图 + 自研 Gym 风格环境。观测把 **CNN 视觉特征**（80×86 灰度帧堆叠）与 **RAM 数值特征**融合——因为平台、坑、悬崖这些地形信息只存在于像素里，纯 RAM 观测的 agent 永远学不会跳。
 
@@ -10,6 +10,16 @@
 
 <p align="center">
   <img src="docs/images/1-2_clear.gif" width="70%" alt="AI 通关第二关 Round 1-2"/>
+</p>
+
+第三关模型（`models/ppo_1-3_clear_16M.pt`，累计 16,005,120 env steps，1-3 为主课程）**已拿下 Round 1-3**：greedy 实测 16 局 2 局真正通关（通关那局推进 6536 / 6804 px），平均 6272 px。下面是它的一次完整通关实录（带实时标注 + jsnes 还原的原版 BGM）。
+
+<p align="center">
+  <img src="docs/images/1-3_clear.gif" width="70%" alt="AI 通关第三关 Round 1-3"/>
+  <br/>
+  <em>完整通关录像（含 jsnes 还原的原版 BGM）：</em>
+  <a href="videos/1-3_clear_player.mp4">玩家视角 mp4（768×720，带标注）</a>
+  · <a href="videos/1-3_clear_agent.mp4">agent 视角 mp4（马赛克）</a>
 </p>
 
 ## 成果
@@ -33,6 +43,20 @@
 | 无头评估 | 12 局 **4 局真正通关**，其余多死在 5186 px（终点前最后一处） |
 | 观测 | 69 维 RAM 向量（含 32 关 one-hot）+ 80×86×2 灰度帧堆叠 |
 | 模型 | `models/ppo_1-2_clear_8M.pt`（回放需 `--stage-idx 0`，见历史记录） |
+
+### 第三关（Round 1-3，累计 16M 步）
+
+| 指标 | 数值 |
+|------|------|
+| 训练量 | 16,005,120 env steps（首轮 8M + 续训 8M，各约 125 分钟，48 个 CPU 工作进程） |
+| 课程 | 首轮 `--stages "1-3:0.6,1-2:0.3,1-1:0.1"`，续训 `"1-3:0.8,1-2:0.15,1-1:0.05"`，开局预装备斧头 |
+| 实测通关 | greedy **16 局 2 局真正通关**（推进 6536 / 6804 px），平均 6272 px |
+| 观测 | 71 维 RAM 向量（32 关 one-hot + 火焰弹位 + 无敌位）+ 80×86×2 灰度帧堆叠 |
+| 模型 | [`models/ppo_1-3_clear_16M.pt`](models/ppo_1-3_clear_16M.pt)（回放需 `--start-round 2 --stage-idx 2`） |
+
+> ⚠️ **评估起点的坑**：`--start-round 2`（和训练一致的开机起点）能测出通关，
+> 用 `saves/stages/stage_1-3.state` 起点测 12 局 0 通关（最好 6607 px）——同一份权重两种结论。
+> 详见 [历史记录](历史记录/第二关训练曲折史.md)。
 
 <p align="center">
   <img src="docs/images/stage_clear.png" width="45%" alt="STAGE CLEAR"/>
@@ -72,8 +96,15 @@ python enjoy.py runs/ppo_v10/ppo_final.pt --deterministic
 python visualize.py models/ppo_1-2_clear_8M.pt \
     --start-state saves/stages/stage_1-2.state --stage-idx 0
 
-# 无头评估：N 局贪心策略，报告最远距离/死亡/吃道具/拿斧头
-python evaluate.py runs/ppo_v10/ppo_final.pt --episodes 8
+# 观看第三关模型（用 --start-round 2 开机起步，别用 stage_1-3.state：
+# 后者测出来是 0/12 通关，同一份权重两种结论）
+python visualize.py models/ppo_1-3_clear_16M.pt \
+    --start-round 2 --stage-idx 2
+
+# 无头评估：N 局贪心策略 —— 用 eval_native.py（真训练 env），
+# evaluate.py 的观测 shim 已随观测扩维漂移，数字不可信
+python tools/eval_native.py models/ppo_1-3_clear_16M.pt \
+    --start-round 2 --stage-idx 2 --episodes 16 --clear-ends-episode
 
 # 自己训练（CPU，8 并行环境）
 python train.py --timesteps 15000000 --save-dir runs/my_run
@@ -165,7 +196,7 @@ record.py              把一局录成 GIF + Contact Sheet
 ram_map.py             RAM 地址常量、对象槽解码、摄像机跟踪
 tools/                 111 个逆向探测脚本（见下表）
 runs/ppo_v10/          发布的第一关模型 + 训练曲线
-models/                发布的第二关模型（ppo_1-2_clear_8M.pt）+ 训练曲线
+models/                发布的通关模型（1-2: ppo_1-2_clear_8M.pt，1-3: ppo_1-3_clear_16M.pt）+ 训练曲线
 历史记录/               第二关训练曲折史：踩坑 → 误判 → 决定性实验 → 修复
 videos/                通关录像（mp4，GitHub 仅提供下载）
 docs/images/           README 截图 + 自动播放的通关 GIF
@@ -195,6 +226,7 @@ docs/images/           README 截图 + 自动播放的通关 GIF
 | `eval_native.py` | 原生环境基准评估——播放端与训练端对不上时以它为准 |
 | `record_clear_2view.py` | 双视角通关录制：玩家视角（标注）+ agent 视角（80×86 马赛克） |
 | `jsnes_replay2.mjs` / `mux_video.py` | jsnes 重放同一串输入抓原声 + 音画合流 |
+| `make_gif.py` | mp4 → README 用 GIF（两段式 palette，关掉抖动；否则 NES 画面会膨胀到 16 MB） |
 
 ## 性能
 
@@ -204,7 +236,8 @@ docs/images/           README 截图 + 自动播放的通关 GIF
 
 ## 已知限制
 
-- **Round 1-1 与 Round 1-2 已通关**；1-3 及更后面的轮次尚未攻克（需要更多训练与奖励设计）。
+- **Round 1-1、1-2、1-3 已通关**；1-4 及更后面的轮次尚未攻克（1-4 前段密度明显更高：脚本机器人 696 px 就死 49 次）。
+- 第三关通关率还只有 **2/16（约 12%）**，且**只对 `--start-round 2` 的开机起点成立**；换 `saves/stages/stage_1-3.state` 起点测是 0/12。评估一律用 `tools/eval_native.py`（`evaluate.py` 的观测 shim 已随观测扩维漂移，数字不可信）。
 - 第二关的通关率还有波动：原生环境 12 局 8 局跑满全程，无头评估 12 局 4 局通关，剩下的大多死在终点前 **5186 px** 那一处（还没定位是什么）。
 - 游戏完全确定性：不插入随机 warmup 的话，8 个并行世界会跑出字节级相同的轨迹（实测：无 warmup 时 20 局评估全是同一局的 1975 px）。reset 时会插入 ≤90 帧随机操作。
 - `start_with_axe` 是课程塑造；真实对局需要自己捡斧头。

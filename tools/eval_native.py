@@ -67,10 +67,12 @@ def main() -> None:
         xs.append(float(info["x_progress"]))
         steps.append(n)
         kills.append(int(info.get("kills", 0)))
+        cleared = bool(info.get("cleared", False))
         print(f"  ep{e+1:2d}: x_progress {info['x_progress']:7.1f} px  "
               f"{n:4d} 决策 ({n * env.frame_skip} 帧)  "
               f"死 {int(info['death'])}  吃道具 {info.get('score', 0)}  "
-              f"杀敌 {int(info.get('kills', 0))}")
+              f"杀敌 {int(info.get('kills', 0))}"
+              + ("   *** CLEAR ***" if cleared else ""))
 
     xs = np.asarray(xs)
     print()

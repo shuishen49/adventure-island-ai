@@ -188,7 +188,15 @@ def play_one(net, env, base_inputs, player_path, agent_path,
             nes.controller = ctrl
             arr = np.asarray(nes.step(), dtype=np.uint8)
             nes.controller = 0
-            env._push_frame(arr)
+            # env.step() runs frame_skip NES frames and pushes ONLY the last
+            # one, so the policy is trained on a stack whose channels are
+            # `frame_skip` frames apart.  Pushing every frame here feeds a
+            # 1-frame gap -- the same silent train/test mismatch that made
+            # evaluate.py report a bogus "230 px" (2026-10-17).  It showed up
+            # here as a scripted 824 px while eval_native saw 6511 px on the
+            # very same seed.
+            if f % env.frame_skip == env.frame_skip - 1:
+                env._push_frame(arr)
             env._last_frame = arr
 
             prog = cam.progress(nes)
@@ -248,6 +256,11 @@ def main():
     ap.add_argument("--scale", type=int, default=4)
     ap.add_argument("--agent-scale", type=int, default=8)
     ap.add_argument("--no-greedy-first", action="store_true")
+    ap.add_argument("--greedy", action="store_true",
+                    help="argmax in EVERY episode (default: only ep1).  Use "
+                         "this when you know a certain seed clears -- see "
+                         "outputs/find_clear_seed.log -- because sampling "
+                         "throws that reproducibility away.")
     args = ap.parse_args()
 
     os.makedirs(OUT, exist_ok=True)
@@ -288,7 +301,7 @@ def main():
             env.reset(seed=1000 + ep)
             base = list(boot_inputs) + list(warmup_log) + [0x00]
             axe_frame = len(boot_inputs) + len(warmup_log)
-            greedy = (ep == 0 and not args.no_greedy_first)
+            greedy = args.greedy or (ep == 0 and not args.no_greedy_first)
             if not greedy:
                 torch.manual_seed(1000 + ep)
             r = play_one(net, env, base,

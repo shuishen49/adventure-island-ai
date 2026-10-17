@@ -234,19 +234,32 @@ def annotate(frame: np.ndarray, nes, action_name: str,
     n_shot = onscreen(lambda i: i == R.ID_PROJECTILE)
     d.rectangle([0, 0, 256, 26 + (12 if hud_extra else 0)], fill=(0, 0, 0))
     armed = nes[R.WEAPON] > 0
+    # $006D is a weapon TYPE: 1 = stone axe, 2 = FIREBALL (same object id
+    # 66 in the air -- only this byte tells them apart).  Shout about the
+    # fireball: it reaches ~270 px vs ~186 px and breaks rocks.
+    fire = nes[R.WEAPON] >= 2
     # The board is a spare life: it eats one enemy hit (falls still kill).
     # Shout about it, or the window gives no clue why a hit did not hurt.
     boarding = nes[R.SKATEBOARD] > 0
     d.text((3, 2), f"LIVES {nes[R.LIVES]}  STA {nes[R.STAMINA]}  "
-                   f"AXE {'YES' if armed else 'no '}  "
+                   f"{'FIRE' if fire else ('AXE' if armed else 'no wpn')}  "
                    f"A/R {nes[R.AREA]}/{nes[R.ROUND]} "
                    f"CK {nes[R.CHECKPOINT]}",
-           fill=(120, 255, 120) if armed else (255, 255, 255))
+           fill=(255, 170, 60) if fire else
+           ((120, 255, 120) if armed else (255, 255, 255)))
     if boarding:
         d.rectangle([196, 1, 254, 11], fill=(0, 90, 0))
         d.text((199, 2), "* SKATE *", fill=(150, 255, 150))
     else:
         d.text((199, 2), "  skate -", fill=(110, 110, 110))
+    # 2026-10-17: id 199 on any slot = the white fairy puff => INVINCIBLE
+    # (tools/probe_fairy_inv.py: enemy pinned onto the player does not
+    # kill while it is on stage).  Shout about it too.
+    invincible = any(int(nes[R.OBJ.id + R.OBJ.STRIDE * s]) == 199
+                     for s in range(16))
+    if invincible:
+        d.rectangle([130, 1, 194, 11], fill=(120, 120, 0))
+        d.text((133, 2), "* INV *", fill=(255, 255, 120))
     d.text((3, 13), f"P x={px_x:6.1f} y={px_y:5.1f} scroll={nes[R.CAMERA]:3d} "
                     f"| E{n_enemy} F{n_fruit} I{n_item} "
                     f"B{n_block} S{n_shot} Z{n_zombie} "

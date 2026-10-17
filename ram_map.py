@@ -83,6 +83,11 @@ CHECKPOINT = 0x0039
 LIVES = 0x003F
 DEATH = 0x0072
 STAMINA = 0x0076
+# $006D is a weapon TYPE, not a boolean (romdetectives RAM map + measured
+# 2026-10-17 with tools/probe_fireball.py): 0 = unarmed, 1 = stone axe,
+# 2 = magical fireball.  Both projectiles share object id 66, so the ONLY
+# way to tell them apart is this byte.  Fireball flies ~270 px vs the
+# axe's ~186 px and is the only weapon that destroys rocks / boulders.
 WEAPON = 0x006D
 SKATEBOARD = 0x006E
 BTN_A_FLAG = 0x0071
@@ -227,7 +232,12 @@ OBJ_KINDS = {
     # feature (yet -- a nearest-platform feature is the real upgrade, not a
     # label).
     58: ("PLAT?", (120, 220, 255)),
-    199: ("DECO", (170, 170, 170)),
+    # id 199 -- the white "fairy puff" that trails the player while
+    # INVINCIBLE.  Decisive test 2026-10-17 (tools/probe_fairy_inv.py):
+    # with 199 on stage an enemy pinned onto the player does NOT set the
+    # death flag (2/2); without it the same poke kills (2/2).  Only seen
+    # on 1-3.  The puff cannot be "eaten" -- it is the active effect.
+    199: ("FAIRY", (255, 255, 120)),
 }
 UNKNOWN_KIND = ("?", (200, 200, 200))
 

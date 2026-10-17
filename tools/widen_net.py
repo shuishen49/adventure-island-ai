@@ -38,15 +38,22 @@ from env import (IMG_H, IMG_STACK, IMG_W, N_ACTIONS, OBS_DIM,  # noqa: E402
                  N_STAGES, AdventureIslandEnv)
 from train import ActorCritic  # noqa: E402
 
-OLD_DIM = OBS_DIM - N_STAGES       # what the source checkpoint was built on
+OLD_DIM = OBS_DIM - N_STAGES       # placeholder; re-derived per checkpoint
 
 
 def widen(src_path: str, dst_path: str) -> None:
+    global OLD_DIM
     ck = torch.load(src_path, map_location="cpu", weights_only=False)
     old = ck["model"]
 
     net = ActorCritic(OBS_DIM, N_ACTIONS, 128)
     new = net.state_dict()
+    # derive the OLD observation dim from the source checkpoint itself so
+    # this works for ANY widening (37->69 one-hot, 69->70 fire bit,
+    # 70->71 invincibility bit, ...) without hard-coded deltas
+    flat = new["fuse.0.weight"].shape[1] - OBS_DIM
+    OLD_DIM = old["fuse.0.weight"].shape[1] - flat
+    delta = OBS_DIM - OLD_DIM
 
     inherited, zeroed = [], []
     for k, v in new.items():
@@ -56,12 +63,12 @@ def widen(src_path: str, dst_path: str) -> None:
             new[k] = old[k].clone()
             inherited.append(k)
         elif k == "fuse.0.weight" and old[k].shape[0] == v.shape[0] \
-                and v.shape[1] - old[k].shape[1] == N_STAGES:
-            # concat zeros on the RIGHT: the one-hot tail is appended last
-            # in env._build_obs, so the kept columns still line up with the
-            # original features.
+                and v.shape[1] - old[k].shape[1] == delta:
+            # concat zeros on the RIGHT: every new obs column is appended
+            # last in env._build_obs, so the kept columns still line up
+            # with the original features.
             new[k] = torch.cat(
-                [old[k], torch.zeros(old[k].shape[0], N_STAGES)], dim=1)
+                [old[k], torch.zeros(old[k].shape[0], delta)], dim=1)
             zeroed.append(k)
         else:
             raise SystemExit(
@@ -86,11 +93,15 @@ def check(src_path: str, dst_path: str, episodes: int = 3) -> None:
     plan.md phase 2 acceptance: same farthest progress, same death count.
     """
     old_ck = torch.load(src_path, map_location="cpu", weights_only=False)
+    new_ck0 = torch.load(dst_path, map_location="cpu", weights_only=False)
+    flat = new_ck0["model"]["fuse.0.weight"].shape[1] - OBS_DIM
+    global OLD_DIM
+    OLD_DIM = old_ck["model"]["fuse.0.weight"].shape[1] - flat
     old_net = ActorCritic(OLD_DIM, N_ACTIONS, 128)
     old_net.load_state_dict(old_ck["model"])
     old_net.eval()
 
-    new_ck = torch.load(dst_path, map_location="cpu", weights_only=False)
+    new_ck = new_ck0
     new_net = ActorCritic(OBS_DIM, N_ACTIONS, 128)
     new_net.load_state_dict(new_ck["model"])
     new_net.eval()
@@ -120,9 +131,10 @@ def check(src_path: str, dst_path: str, episodes: int = 3) -> None:
                                              dtype=torch.float32)})[0]
     print(f"max |logit diff| = {(lo - ln).abs().max().item():.3e}")
 
-    # and the one-hot must really be inert: zeroing it changes nothing
+    # and the new tail columns must really be inert: zeroing them changes
+    # nothing (they start as zeros, so this only guards the concat order)
     z = obs["ram"].copy()
-    z[-N_STAGES:] = 0.0
+    z[OLD_DIM:] = 0.0
     with torch.no_grad():
         lz = new_net({"img": torch.as_tensor(obs["img"][None]),
                       "ram": torch.as_tensor(z[None], dtype=torch.float32)})[0]
