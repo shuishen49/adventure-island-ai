@@ -6,7 +6,7 @@
 
 第一关模型（`runs/ppo_v10/ppo_final.pt`，1500 万 env steps）**8/8 局稳定通关 Round 1-1**，每局约 80 秒游戏时间，最远推进 5776 px。
 
-第二关模型（`models/ppo_1-2_clear_8M.pt`，800 万 env steps，1-2/1-1 混合课程）**已拿下 Round 1-2**：原生环境实测平均推进 5961 px、12 局 8 局跑满全程，无头评估 12 局 4 局真正通关（关卡全长约 6800 px）。下面是它的一次完整通关实录（带实时标注，右侧说明见 [历史记录/训练曲折史.md](历史记录/训练曲折史.md)）。
+第二关模型（`models/ppo_1-2_clear_8M.pt`，800 万 env steps，1-2/1-1 混合课程）**已拿下 Round 1-2**：原生环境实测平均推进 5961 px、12 局 8 局跑满全程，无头评估 12 局 4 局真正通关（关卡全长约 6800 px）。下面是它的一次完整通关实录（带实时标注，右侧说明见 [历史记录/第二关训练曲折史.md](历史记录/第二关训练曲折史.md)）。
 
 <p align="center">
   <img src="docs/images/1-2_clear.gif" width="70%" alt="AI 通关第二关 Round 1-2"/>
@@ -68,7 +68,7 @@ export AI_ROM="/path/to/Adventure Island (USA).nes"       # Linux/macOS
 python enjoy.py runs/ppo_v10/ppo_final.pt --deterministic
 
 # 观看第二关模型（必须从 1-2 存档起步、one-hot 显式给 0——
-# 该检查点训练时的关卡顺序与文件名推断相反，原因见 历史记录/训练曲折史.md 第 8 节）
+# 该检查点训练时的关卡顺序与文件名推断相反，原因见 历史记录/第二关训练曲折史.md 第 8 节）
 python visualize.py models/ppo_1-2_clear_8M.pt \
     --start-state saves/stages/stage_1-2.state --stage-idx 0
 
@@ -166,7 +166,7 @@ ram_map.py             RAM 地址常量、对象槽解码、摄像机跟踪
 tools/                 111 个逆向探测脚本（见下表）
 runs/ppo_v10/          发布的第一关模型 + 训练曲线
 models/                发布的第二关模型（ppo_1-2_clear_8M.pt）+ 训练曲线
-历史记录/               训练曲折史：踩坑 → 误判 → 决定性实验 → 修复
+历史记录/               第二关训练曲折史：踩坑 → 误判 → 决定性实验 → 修复
 videos/                通关录像（mp4，GitHub 仅提供下载）
 docs/images/           README 截图 + 自动播放的通关 GIF
 ```
