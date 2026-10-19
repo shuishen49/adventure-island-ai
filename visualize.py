@@ -325,9 +325,29 @@ def main() -> None:
                    help="open this dumped save state instead of booting "
                         "(e.g. saves/stages/stage_1-2.state)")
     ap.add_argument("--stage-idx", type=int, default=None,
-                   help="which stage the one-hot tail should say we are in "
-                        "(0 = 1-1, 1 = 1-2, 4 = 2-1 ...).  Guessed from "
-                        "--start-state / --start-round if omitted.")
+                   help="which stage the one-hot tail should say we are in.  "
+                        "With --stages this is the 0-based INDEX INTO THE "
+                        "POOL (sorted 1-1,1-2,... like training), not "
+                        "area*4+round -- env.reset() sets _stage_idx = i.  "
+                        "Without --stages it stays (area-1)*4+(round-1).")
+    ap.add_argument("--force-stage", default=None,
+                   help="always play this one stage instead of drawing from "
+                        "the pool (e.g. 1-4boss for the boss arena).  The "
+                        "one-hot index is still taken from --stages, so it "
+                        "stays consistent with training.")
+    ap.add_argument("--stages", type=str, default=None,
+                   help="same curriculum string as train.py, e.g. "
+                        "'1-1:0.02,1-2:0.03,1-3:0.05,1-4:0.33,1-4boss:0.25,"
+                        "1-4late:0.32'.  Names are real stages (1-1..8-4) "
+                        "or a snapshot of one (1-4boss, 1-4late).  "
+                        "Each life is drawn from that pool so the window "
+                        "shows the real training mix AND feeds the matching "
+                        "one-hot bit (see --stage-idx).")
+    ap.add_argument("--record-ram", type=str, default=None,
+                    help="dump RAM every frame to this .npy so a manual "
+                         "session can be analysed afterwards (used to hunt "
+                         "for the boss HP byte: 0x00-0xFF + the object "
+                         "table 0x500-0x6FF)")
     args = ap.parse_args()
 
     net = None
@@ -365,14 +385,55 @@ def main() -> None:
         pass
 
     import env as _envmod
+
+    # --- curriculum pool (same string + same canonical sort as train.py) --
+    # Without this the window boots 1-1 while the one-hot claims another
+    # stage, so the policy plays a stage it cannot see (2026-10-18).
+    pool: list[str] = []
+    pool_w: list[float] = []
+    pool_names: list[str] = []
+    if args.stages:
+        from env import parse_stage_pool
+        pool, pool_w, pool_names, pool_idx = parse_stage_pool(args.stages)
+        for path, name in zip(pool, pool_names):
+            if not os.path.exists(path):
+                ap.error(f"no such stage save: {path} (entry '{name}')")
+        print("stage pool: " + ", ".join(f"{n}={w:g}" for n, w in zip(pool_names, pool_w)),
+              flush=True)
+        print("one-hot index = position in that pool (matches env.reset)",
+              flush=True)
+
+    rng = np.random.default_rng(1234)
+    cur = [0]                       # mutable: index of the stage on screen
+
+    def draw_stage() -> int:
+        if pool:
+            if args.force_stage and args.force_stage in pool_names:
+                cur[0] = pool_names.index(args.force_stage)
+            else:
+                cur[0] = int(rng.choice(len(pool), p=pool_w))
+        return cur[0]
+
     # the one-hot stage tail has to match what is on screen, or the policy
-    # thinks it is playing a different stage
+    # thinks it is playing a different stage.  With a pool the bit comes
+    # from pool_idx (which honours any "@N" override); without one it is
+    # just --stage-idx / the guessed index.
     stage_idx = args.stage_idx
     if stage_idx is None:
         stage_idx = guess_stage_idx(args.start_state, args.start_round)
-    print(f"stage one-hot index: {stage_idx}", flush=True)
+    cur[0] = 0
+
+    def one_hot() -> int:
+        return (pool_idx[cur[0]] if pool else stage_idx)
+
     nes = NES(_envmod.ROM)
-    boot(nes, start_round=args.start_round, start_state=args.start_state)
+    if pool:
+        i = draw_stage()
+        boot(nes, start_state=pool[i])
+        print(f"  episode on {pool_names[i]} (one-hot {pool_idx[i]})",
+              flush=True)
+    else:
+        boot(nes, start_round=args.start_round, start_state=args.start_state)
     start_lives = nes[R.LIVES]
     # Same curriculum as the training env: every episode starts with the axe
     # armed, otherwise a death means replaying the whole "go fetch the axe"
@@ -402,11 +463,44 @@ def main() -> None:
 
     def restart_game() -> None:
         """Rewind to the boot snapshot and re-seed all derived state."""
+        nonlocal start_state
+        if pool:
+            # same curriculum draw as the training env, so the one-hot bit
+            # always matches the stage actually on screen
+            i = draw_stage()
+            boot(nes, start_state=pool[i])
+            nes[R.WEAPON] = 1
+            start_state = nes.save()
+            print(f"  episode on {pool_names[i]} (one-hot {pool_idx[i]})",
+                  flush=True)
         nes.load(start_state)
         tracker.reset()
         if net is not None:
             reset_cam(nes)      # drops the cached camera AND the frame stack
             prime_img()         # ...so the stack has to be refilled
+
+    # --- optional RAM recorder -----------------------------------------
+    rec = None
+    if args.record_ram:
+        import atexit
+
+        def _snap(nes):
+            lo = np.frombuffer(bytes(nes[a] for a in range(0x00, 0x100)),
+                               dtype=np.uint8)
+            objs = np.frombuffer(bytes(nes[a] for a in range(0x500, 0x700)),
+                                 dtype=np.uint8)
+            return np.concatenate([lo, objs])
+
+        rec = []
+
+        def _flush():
+            if rec:
+                np.save(args.record_ram, np.stack(rec))
+                print(f"\nrecorded {len(rec)} frames -> {args.record_ram}",
+                      flush=True)
+
+        atexit.register(_flush)
+        print(f"RAM recording on -> {args.record_ram}", flush=True)
 
     action, action_name = 0, "noop"
     tracker = R.SlotActivityTracker()   # zombie-slot filter (arms on death)
@@ -459,7 +553,7 @@ def main() -> None:
                 import torch
                 from env import ACTIONS
                 from enjoy import obs_tensor
-                obs = obs_tensor(nes, stage_idx)   # {"ram": (1, D), ...}
+                obs = obs_tensor(nes, one_hot())
                 with torch.no_grad():
                     idx = int(net(obs)[0].argmax())
                 # index -> controller bitmask (NOT the index itself!)
@@ -489,6 +583,8 @@ def main() -> None:
 
         nes.controller = action
         buf = np.asarray(nes.step(), dtype=np.uint8)
+        if rec is not None:
+            rec.append(_snap(nes))
         if net is not None and frame % 4 == 3:
             # one push per decision, mirroring env.step()'s frame_skip=4
             push_img(nes, buf)

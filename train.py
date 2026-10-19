@@ -159,6 +159,7 @@ def _worker_loop(rank: int, conn, args, seed: int) -> None:
                              start_state=args.start_state,
                              stage_pool=args.stage_pool,
                              stage_weights=args.stage_weights,
+                             stage_indices=args.stage_indices,
                              clear_ends_episode=args.clear_ends_episode)
     net = ActorCritic(OBS_DIM, N_ACTIONS, args.hidden)
     obs = env.reset(seed=seed)
@@ -181,6 +182,8 @@ def _worker_loop(rank: int, conn, args, seed: int) -> None:
             values = np.zeros(n_steps, dtype=np.float32)
             ep_x: list[float] = []
             n_ep = 0
+            bh = 0          # boss head hits landed in this rollout
+            bk = 0          # bosses defeated in this rollout
             o = obs
 
             for t in range(n_steps):
@@ -198,6 +201,9 @@ def _worker_loop(rank: int, conn, args, seed: int) -> None:
                 o, r, done, info = env.step(act)
                 rewards[t] = r
                 dones[t] = float(done)
+                bh += int(info.get("boss_hits", 0))
+                if info.get("boss_killed"):
+                    bk += 1
                 if done:
                     n_ep += 1
                     ep_x.append(float(info["x_progress"]))
@@ -207,7 +213,8 @@ def _worker_loop(rank: int, conn, args, seed: int) -> None:
                        "logp": logp, "rewards": rewards, "dones": dones,
                        "values": values,
                        "last_obs": {"ram": o["ram"], "img": o["img"]},
-                       "n_ep": n_ep, "ep_x": ep_x})
+                       "n_ep": n_ep, "ep_x": ep_x,
+                       "bh": bh, "bk": bk})
     finally:
         env.close()
         conn.close()
@@ -293,6 +300,7 @@ def train(args) -> None:
                                    start_state=args.start_state,
                                    stage_pool=args.stage_pool,
                                    stage_weights=args.stage_weights,
+                                   stage_indices=args.stage_indices,
                                    clear_ends_episode=args.clear_ends_episode)
                 for i in range(args.nenvs)]
         obs_np = collate([e.reset(seed=args.seed + i)
@@ -354,7 +362,8 @@ def train(args) -> None:
         if not append_log:
             csv.writer(f).writerow([
                 "update", "env_steps", "wall_s", "mean_reward",
-                "mean_x_progress", "episodes", "policy_loss", "value_loss",
+                "mean_x_progress", "episodes", "boss_hits", "boss_kills",
+                "policy_loss", "value_loss",
                 "entropy", "fps"])
 
     total_steps = start_steps
@@ -370,6 +379,8 @@ def train(args) -> None:
             pass
     episodes = 0
     ep_x = []
+    bh_tot = 0
+    bk_tot = 0
 
     base_update = start_steps // steps_per_update
 
@@ -403,6 +414,8 @@ def train(args) -> None:
                 buf.dones[:, i] = d["dones"]
                 episodes += d["n_ep"]
                 ep_x.extend(d["ep_x"])
+                bh_tot += d.get("bh", 0)
+                bk_tot += d.get("bk", 0)
             obs_np = collate([d["last_obs"] for d in data])
         else:
             for t in range(args.steps_per_update):
@@ -419,6 +432,9 @@ def train(args) -> None:
                 next_obs = []
                 for i, env in enumerate(envs):
                     o, r, done, info = env.step(int(a_np[i]))
+                    bh_tot += int(info.get("boss_hits", 0))
+                    if info.get("boss_killed"):
+                        bk_tot += 1
                     if done:
                         episodes += 1
                         ep_x.append(info["x_progress"])
@@ -475,13 +491,15 @@ def train(args) -> None:
 
         print(f"upd {update:4d} | steps {total_steps:8d} | "
               f"rew {buf.rewards.mean():7.3f} | x_prog {mean_x:8.1f} | "
-              f"eps {episodes:4d} | pi {pl / n_mb:6.3f} | v {vl / n_mb:6.3f} | "
+              f"eps {episodes:4d} | boss {bh_tot:3d}h/{bk_tot:2d}k | "
+              f"pi {pl / n_mb:6.3f} | v {vl / n_mb:6.3f} | "
               f"ent {el / n_mb:5.3f} | {fps:5.0f} fps", flush=True)
 
         with open(log_path, "a", newline="") as f:
             csv.writer(f).writerow([
                 update, total_steps, round(time.perf_counter() - start, 1),
                 float(buf.rewards.mean()), mean_x, episodes,
+                bh_tot, bk_tot,
                 pl / n_mb, vl / n_mb, el / n_mb, round(fps, 1)])
 
         if update % args.save_every == 0:
@@ -565,23 +583,16 @@ def parse_args():
     # playback tool that guesses the index from the file name (visualize.py)
     # fed the opposite bit to the policy.  (2026-10-17)
     a.stage_pool, a.stage_weights, stage_names = [], [], []
+    a.stage_indices = None
     if a.stages:
-        for item in a.stages.split(","):
-            item = item.strip()
-            if not item:
-                continue
-            name, _, w = item.partition(":")
-            name = name.strip()
-            stage_names.append((name, float(w) if w else 1.0))
-        stage_names.sort(key=lambda nw: tuple(int(p) for p in nw[0].split("-")))
-        for name, w in stage_names:
-            a.stage_pool.append(os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "saves", "stages", f"stage_{name}.state"))
-            a.stage_weights.append(w)
-        for path in a.stage_pool:
+        # one parser for every tool: the one-hot index IS the position in
+        # this list, so train / visualize / eval must agree exactly.
+        from env import parse_stage_pool
+        (a.stage_pool, a.stage_weights, stage_names,
+         a.stage_indices) = parse_stage_pool(a.stages)
+        for path, name in zip(a.stage_pool, stage_names):
             if not os.path.exists(path):
-                p.error(f"no such stage save: {path}")
+                p.error(f"no such stage save: {path} (entry '{name}')")
         print("stage pool: " + ", ".join(
             f"{n}={w:g}" for n, w in zip(
                 [os.path.basename(p)[6:-6] for p in a.stage_pool],

@@ -139,7 +139,7 @@ FAIRY_ID = 199
 # (SKATE_GAIN) and never learns what it was good for.
 SKATE_SAVE = 2.0            # the board took a hit that would have killed us
 SCORE_SCALE = 0.01          # per score point (fruit, kills, ...)
-KILL_GAIN = 1.0             # an enemy slot died right next to us
+KILL_GAIN = 2.0             # an enemy slot died right next to us
 SHOT_MEMORY = 3             # decision steps an axe stays "in flight"
 # 2026-10-13: "kill" alone is too sparse to learn from.  Measured on the
 # 102 k checkpoint: the agent throws plenty (an axe is airborne 32 % of
@@ -148,8 +148,50 @@ SHOT_MEMORY = 3             # decision steps an axe stays "in flight"
 # pointing at "aim at the snail".  Pay a smaller amount for simply flying
 # an axe past an enemy, which is a far denser signal.
 NEAR_HIT_GAIN = 0.3         # an axe flew right through an enemy
+# --- the 1-4 boss: hit counter, NOT $0011 ------------------------------
+# 2026-10-18, measured with tools/boss_fight_bot.py + outputs/boss_win.npy.
+#
+#   * $0011 IS A DECOY.  It reads 8 / 7 / 6 in various snapshots (which
+#     looks exactly like "8 hits for the area-1 boss") but it never moves
+#     when you hit anything: 3308 frames of jump-throwing that killed the
+#     boss left it pinned at 6 the whole time.  Do NOT pay for it.
+#   * The real signal is field block 16 ($0664 + slot) of the slot holding
+#     the HEAD (id 198, slot 14 in every snapshot we have).  It counts UP
+#     one step per successful hit: 0 -> 1 -> 2 ... -> 8, and at 8 the boss
+#     "changes head and escapes": the body id goes 67 -> 63, the head rises
+#     off the top of the screen and $007A (stage complete) flips to 1.
+#     Eight matches the published area-1 requirement exactly.
+#   * A/B with the same movement script (tools/boss_fight_bot.py):
+#       jump + throw -> boss dies at frame 3308
+#       throw only  -> never      jump only -> never      neither -> never
+#     so the reward cannot be farmed by standing around.
+#   * It is slot-local: the body's own block 16 ($0673) oscillates 0..3
+#     with its walk animation, so the counter MUST be read from the head
+#     slot and only while id 198 is really there.
+BOSS_HEAD_HIT_BLOCK = 0x0664      # block 16 of the object table
+BOSS_HIT_GAIN = 1.0               # per confirmed head hit
+BOSS_KILL_GAIN = 6.0              # boss defeated (body 67 -> 63)
+# One-shot bonus for the frame the boss first appears on screen.  See the
+# comment at its use site: without it the policy prefers to idle just
+# short of the arena trigger.
+BOSS_ARRIVE_GAIN = 2.0
+# 2026-10-18: the flat window was reward hacking.  Measured
+# (tools/snail_test.py on 1-1, and the same probe on 1-4):
+#   * a kill is REAL and detectable -- the snail slot goes 14 -> 69 at the
+#     moment the axe connects, so KILL_GAIN can fire;
+#   * the axe flies on an ARC: dx 44 -> dy 101, dx 94 -> dy 139,
+#     dx 102 -> dy 147, and it only reaches a ground enemy (dy ~159) at the
+#     END of the arc, dx >= ~100.  Thrown at dx 70 it passes ~60 px above
+#     the target.
+# With NEAR_HIT_Y = 40 that miss still scored a full 0.3, so the policy had
+# no reason to ever lift the throw point: 209 "hits" in 4 episodes of 1-4
+# and 0 kills.  The window is now tighter AND graded -- the closer the axe
+# passes to the enemy's centre, the more it pays, with 0 at the rim.
 NEAR_HIT_X = 48             # px (an axe travels ~32 px per decision step,
 NEAR_HIT_Y = 40             # so this window cannot be stepped over)
+# The window keeps its old reach on purpose: kills DO happen (5 in one
+# episode of 1-4), so this is a dense and useful signal.  Only the shape
+# changed -- graded, so a centre pass pays ~1.0 and a rim pass ~0.
 # ...and one step earlier still: just pulling the trigger while an enemy
 # is in front.  The agent currently dies on the FIRST snail it meets, so
 # a whole episode only offers one or two chances to score a near hit.
@@ -157,6 +199,47 @@ THROW_AIM_GAIN = 0.1        # threw while an enemy was ahead of us
 THROW_AIM_MIN = 16          # px - closer than this and the axe cannot
 THROW_AIM_MAX = 200         # reach it before we bump into it anyway
 THROW_AIM_CD = 8            # steps between two such rewards (anti-farm)
+
+# --- boss aim shaping ---------------------------------------------------
+# The 1-4 head is a tiny, high, moving target and the whole fight is worth
+# exactly 8 hits, so "+1 per hit" alone is far too sparse to learn from.
+# Measured geometry (2026-10-18):
+#   * a standing throw peaks at y=136 and a standing jump throw at y=107,
+#     while the head sits at y=93 -- only a RUNNING jump gets an axe up
+#     there, and the axe only travels ~57 px before it falls;
+#   * touching the boss kills outright, so the usable band is ~25..70 px.
+# So: pay a little for releasing a throw while airborne with the head in
+# that band.  Cooldown keeps it from being farmed by spamming B.
+BOSS_AIM_GAIN = 0.2
+BOSS_AIM_MIN = 20
+BOSS_AIM_MAX = 72
+BOSS_AIM_CD = 12
+
+# ...and drifting the other way must cost something BEFORE the fatal
+# contact does.  Death is -5 but it arrives too late to shape anything:
+# a greedy 1-4 run (2026-10-18) walked from dx=131 straight into the boss
+# at dx=22 and never threw once, because "keep going right" is exactly
+# what the travelling half of the policy is rewarded for.
+BOSS_TOO_CLOSE = 24         # px - inside this the boss kills on contact
+BOSS_CLOSE_PENALTY = 0.05   # per decision, ~1/4 of a landed hit per second
+# ...and sitting in the throwing band is worth something on its own, every
+# step, not just on the throw cooldown.  Measured 2026-10-18: from 91 px
+# away the policy kills the boss 10/10, from 120 px it scores 8,0,3,0,0,2
+# -- the missing skill is BRAKING, and before this there was no reason to
+# stop walking right once the approach bonus ran out at 72 px.
+BOSS_HOLD_GAIN = 0.03       # per decision inside (BOSS_AIM_MIN, BOSS_AIM_MAX)
+
+# Closing in from outside the band: paid once per NEW CLOSEST APPROACH
+# (per pixel gained, capped), so pacing back and forth farms nothing.
+BOSS_APPROACH_GAIN = 0.02    # per px closer, same order as progress reward
+BOSS_APPROACH_MAX = 170      # px - beyond this the head is not the target
+
+# The arena never advances the camera, so the normal "no new progress"
+# stall timer would cut every boss fight off at 250 steps -- and the
+# scripted bot needs ~825 steps (3300 frames) for the 8 head hits.  While
+# the boss is on screen the clock instead measures INACTIVITY: every
+# useful action (a throw inside the band, or a landed hit) resets it.
+BOSS_STALL_STEPS = 600
 
 # How many random frames of play to insert after a reset.  The game is
 # completely deterministic, so without this all 8 parallel worlds run
@@ -256,6 +339,67 @@ def load_state_file(path: str) -> np.ndarray:
         return np.frombuffer(fh.read(), dtype=np.uint8).copy()
 
 
+def stage_sort_key(name: str) -> tuple[int, int, str]:
+    """Canonical sort key for a stage-pool entry.
+
+    The real game has 32 stages: 1-1..1-4, 2-1..2-4, ... 8-4.  There is NO
+    1-5/1-6/1-7 -- those names used to be invented for practice snapshots
+    and read like real stages (2026-10-18).  A practice snapshot of a stage
+    is now named <stage><suffix>, e.g. "1-4boss" (boss arena) or "1-4late"
+    (a mid-stage restart), and sorts immediately after the stage it belongs
+    to: "1-4" < "1-4boss" < "1-4late" < "2-1".
+    """
+    area, _, rest = name.partition("-")
+    digits = ""
+    while rest and rest[0].isdigit():
+        digits += rest[0]
+        rest = rest[1:]
+    return (int(area) if area.isdigit() else 99,
+            int(digits) if digits else 0,
+            rest)
+
+
+def parse_stage_pool(spec: str, root: Optional[str] = None
+                     ) -> tuple[list[str], list[float], list[str], list[int]]:
+    """'"1-4:0.4,1-4boss:0.3@3"' -> (paths, weights, names, one-hot idx).
+
+    The one-hot index a stage gets is its POSITION in this list, so every
+    tool (train.py, visualize.py, tools/eval_boss.py) must call this exact
+    function with the exact same string, or the policy is fed a stage bit
+    that does not match the screen.
+
+    "@N" overrides that index.  It exists because several pool entries can
+    be different SNAPSHOTS OF THE SAME STAGE (1-4 from the start, 1-4late
+    from ~3500 px, 1-4boss in the arena).  Left alone they would get three
+    different one-hot bits and the policy would treat "the last stretch of
+    1-4" and "the boss fight of 1-4" as unrelated games, so skills learned
+    in one would not transfer to the other.  Measured 2026-10-18: the very
+    same arena picture scored 8/8 hits at index 4 and 0 hits at index 3.
+    """
+    import os as _os
+    root = root or _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                 "saves", "stages")
+    named: list[tuple[str, float, Optional[int]]] = []
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        name, _, rest = item.partition(":")
+        weight, _, idx = rest.partition("@")
+        named.append((name.strip(), float(weight) if weight else 1.0,
+                      int(idx) if idx.strip() else None))
+    named.sort(key=lambda nw: stage_sort_key(nw[0]))
+    paths, weights, names = [], [], []
+    for name, w, _ in named:
+        paths.append(_os.path.join(root, f"stage_{name}.state"))
+        weights.append(w)
+        names.append(name)
+    s = sum(weights) or 1.0
+    indices = [idx if idx is not None else i
+               for i, (_, _, idx) in enumerate(named)]
+    return paths, [w / s for w in weights], names, indices
+
+
 class AdventureIslandEnv:
     """Headless cynes environment with a RAM feature vector observation."""
 
@@ -269,6 +413,7 @@ class AdventureIslandEnv:
                  stage_pool: Optional[list[str]] = None,
                  stage_weights: Optional[list[float]] = None,
                  stage_index: Optional[int] = None,
+                 stage_indices: Optional[list[int]] = None,
                  clear_ends_episode: bool = False) -> None:
         self.rom_path = rom_path
         self.frame_skip = frame_skip
@@ -303,6 +448,12 @@ class AdventureIslandEnv:
             self.stage_weights = (w / w.sum()).tolist()
         else:
             self.stage_weights = []
+        # Optional per-entry override of the one-hot bit (see
+        # parse_stage_pool).  Several snapshots of one stage share a bit so
+        # the skill transfers between them; pool position alone would split
+        # them.  None -> fall back to "index = position in the pool".
+        self.stage_indices: Optional[list[int]] = (
+            list(stage_indices) if stage_indices is not None else None)
         # Which stage the CURRENT episode is in -- the 32-way one-hot at
         # the end of the observation is built from this.
         self._stage_idx = stage_index if stage_index is not None else 0
@@ -411,10 +562,27 @@ class AdventureIslandEnv:
         agent still starts at the beginning of the stage, just at a
         slightly different point in the run-up.
         """
+        # 2026-10-18: the boss arena has no room for a run-up -- the boss
+        # walks toward Higgins while the warm-up runs him right, so a
+        # 90-frame warm-up turned a safe 91 px into a lethal 6 px and the
+        # practice episodes were dead on the first decision.  Once the boss
+        # is on screen the warm-up only idles or jumps: still enough to
+        # de-synchronise the parallel worlds, but it does not close in.
+        # 2026-10-19: with idle/jump only, an arena episode could never
+        # stumble onto a hit during warm-up, and -- much worse -- the
+        # policy had no reason to ever throw there: measured on every
+        # checkpoint we have, it scores 8/8 hits in the hand-made practice
+        # snapshot and exactly 0 in every REAL arrival frame.  So the
+        # warm-up now also throws (never RIGHT: closing in is what kills).
         n = int(self.rng.integers(0, WARMUP_MAX + 1))
         for _ in range(n):
-            self._nes.controller = int(self.rng.choice(
-                (0x00, NES_INPUT_RIGHT, NES_INPUT_RIGHT | NES_INPUT_A)))
+            if self._boss_on_screen():
+                self._nes.controller = int(self.rng.choice(
+                    (0x00, NES_INPUT_A, NES_INPUT_B,
+                     NES_INPUT_A | NES_INPUT_B)))
+            else:
+                self._nes.controller = int(self.rng.choice(
+                    (0x00, NES_INPUT_RIGHT, NES_INPUT_RIGHT | NES_INPUT_A)))
             self._nes.step()
         self._nes.controller = 0
 
@@ -426,7 +594,8 @@ class AdventureIslandEnv:
         if self.stage_pool:
             i = int(self.rng.choice(len(self.stage_pool),
                                     p=self.stage_weights))
-            self._stage_idx = i
+            self._stage_idx = (i if self.stage_indices is None
+                               else self.stage_indices[i])
             state = self.stage_pool[i]
         else:
             state = self._save_state
@@ -470,7 +639,15 @@ class AdventureIslandEnv:
         self._last_area = self._nes[R.AREA]
         self._last_round = self._nes[R.ROUND]
         self._last_checkpoint = self._nes[R.CHECKPOINT]
+        boss_hits, boss_beaten = self._boss_hit_count()
+        self._last_boss_hits = boss_hits
+        self._boss_beaten = boss_beaten
+        self._boss_aim_cd = 0
         self._steps = 0
+        self._boss_fight = False
+        self._prev_boss_fight = False     # to catch the arrival frame
+        self._boss_act_step = 0      # for the boss-specific stall clock
+        self._boss_dx_best: float | None = None   # None = not seen yet
         self._x_progress = 0.0
         self._best_progress = self._last_progress
         self._best_step = 0
@@ -565,6 +742,70 @@ class AdventureIslandEnv:
             out.append((dx, dy, spd / 64.0, oid))
         out.sort(key=lambda e: abs(e[0]))
         return out[:K_NEAREST_ENEMIES]
+
+    def _boss_on_screen(self) -> bool:
+        """Is the 1-4 boss (id 67 body / 198 head) loaded in any slot?
+
+        The user identified it from a screenshot (2026-10-18): one creature,
+        two slots.  They also tested by hand that axes at the BODY do
+        nothing while hits to the HEAD hurt it.
+        """
+        return self._boss_head_slot() is not None
+
+    def _boss_head_slot(self):
+        """Slot holding the boss HEAD (id 198), or None.
+
+        Everything boss-related is read relative to this slot: the head is
+        the only part that can be damaged, and its field block 16 is the
+        hit counter (see BOSS_HEAD_HIT_BLOCK).
+        """
+        nes = self._nes
+        for s in range(1, N_SLOTS_SCANNED):
+            if int(nes[R.OBJ.id + R.OBJ.STRIDE * s]) == R.BOSS_HEAD_ID:
+                return s
+        return None
+
+    def _boss_head_dx(self):
+        """Screen-space dx from the player to the boss head, or None.
+
+        Object x is SCREEN space (ram_map docstring), so a plain difference
+        is the on-screen distance -- exactly what the axe has to cover.
+        """
+        s = self._boss_head_slot()
+        if s is None:
+            return None
+        nes = self._nes
+        dx = int(nes[R.OBJ.x_lo + R.OBJ.STRIDE * s]) - int(nes[R.OBJ.x_lo])
+        # wrap into (-128, 128]
+        if dx > 128:
+            dx -= 256
+        elif dx < -128:
+            dx += 256
+        return dx
+
+    def _player_airborne(self) -> bool:
+        """True when Higgins is off the ground (screen y smaller = higher).
+
+        Measured: standing on the floor y_lo = 144, a standing jump bottoms
+        out at ~110, a running jump at ~70.
+        """
+        return int(self._nes[R.OBJ.y_lo]) < 138
+
+    def _boss_hit_count(self) -> tuple[int, bool]:
+        """(hits landed on the head so far, is the boss already beaten).
+
+        Returns (-1, False) when there is no boss on screen at all, so a
+        stage without a boss can never pay the reward.
+        """
+        s = self._boss_head_slot()
+        if s is None:
+            return -1, False
+        nes = self._nes
+        hits = int(nes[BOSS_HEAD_HIT_BLOCK + s])
+        beaten = int(nes[R.OBJ.id + R.OBJ.STRIDE * s]) != R.BOSS_HEAD_ID \
+            or any(int(nes[R.OBJ.id + R.OBJ.STRIDE * t]) == R.BOSS_BEATEN_ID
+                   for t in range(1, N_SLOTS_SCANNED))
+        return hits, beaten
 
     def _nearest_of_kind(self, ids: tuple[int, ...] | int
                          ) -> tuple[float, float, float]:
@@ -696,16 +937,19 @@ class AdventureIslandEnv:
                              R.px(R.read_obj_world_y(nes, s) - p_y)))
 
         live: set[tuple[int, int]] = set()
-        hits = 0
+        score = 0.0
         for ss, sx, sy in shots:
             for fs, fx, fy in foes:
-                if abs(sx - fx) < NEAR_HIT_X and abs(sy - fy) < NEAR_HIT_Y:
+                dx, dy = abs(sx - fx), abs(sy - fy)
+                if dx < NEAR_HIT_X and dy < NEAR_HIT_Y:
                     key = (ss, fs)
                     live.add(key)
                     if key not in self._hit_pairs:
-                        hits += 1
+                        # 1.0 dead centre, 0 at the rim of the window --
+                        # a near miss now pays strictly less than a hit.
+                        score += 1.0 - max(dx / NEAR_HIT_X, dy / NEAR_HIT_Y)
         self._hit_pairs = live
-        return min(hits, 2)          # never pay for more than 2 per step
+        return min(score, 2.0)       # never pay for more than 2 per step
 
     def _count_kills(self) -> int:
         """Enemy slots that were next to us last step and are gone now.
@@ -761,20 +1005,60 @@ class AdventureIslandEnv:
                         or nes[R.CHECKPOINT] != self._last_checkpoint)
 
         # True world progress: camera travel + on-screen movement.
+        #
+        # PAY FOR NEW GROUND ONLY (2026-10-18).  The old rule banked every
+        # small forward delta and skipped any |dp| >= 64 jump ("respawn
+        # teleport"), which made the reward HACKABLE: on 1-4 the policy
+        # bounces ~100 px forward and straight back (tools/diag_14_deaths.py,
+        # measured: screen x pinned at 96, camera swinging 60<->80, 13
+        # cycles in one life).  The outbound leg is a big negative jump and
+        # was therefore free, while the walk back was paid for -- 89 px of
+        # reward per cycle, standing still.  It inflated the reported
+        # x_progress 2.4x (1911 px claimed on a run whose true maximum was
+        # 744 px) and, worse, the agent was being trained to farm it.
+        #
+        # Now: a step only pays when it sets a new furthest point, so
+        # oscillating pays nothing at all; and going backwards is charged
+        # on EVERY pixel (clamped, so a respawn teleport cannot produce an
+        # enormous negative spike).
         progress = self._cam.progress(nes)
         dp = progress - self._last_progress
-        if abs(dp) < 64:                     # ignore respawn teleports
-            self._x_progress += dp
-            progress_r = float(np.clip(dp, -32, 32)) * 0.02
+        self._last_progress = progress
+        if progress > self._best_progress:
+            new_ground = progress - self._best_progress
+            self._best_progress = progress
+            self._best_step = self._steps
+            progress_r = float(np.clip(new_ground, 0, 32)) * 0.02
+        elif dp < 0:
             # Walking BACKWARDS must be clearly worse than standing still,
             # otherwise fleeing left is cheaper than facing the snail ahead
             # (measured 2026-10-13: the ppo_v3 policy learned to hold
             # left+jump against the left screen edge for 1000+ frames
             # instead of advancing -- see tools/probe_window_traj.py).
-            if dp < 0:
-                progress_r *= BACKWARD_PENALTY
+            progress_r = float(np.clip(dp, -32, 32)) * 0.02 * BACKWARD_PENALTY
         else:
             progress_r = 0.0
+        # --- boss arena: "walking right" must stop paying --------------
+        # 2026-10-18, straight from the user: once the boss is on screen,
+        # paying for ground gained teaches the runner to walk straight
+        # into the boss and die.  Progress is still MEASURED honestly
+        # (best_progress keeps updating, so eval stays truthful) but it
+        # pays nothing while 67/198 are on screen -- from here the only
+        # way to score is to actually hurt the boss (and to stay alive).
+        self._boss_fight = self._boss_on_screen()
+        boss_arrived = self._boss_fight and not self._prev_boss_fight
+        if boss_arrived:
+            # First frame with 67/198 on screen.  The boss stall clock must
+            # start NOW: it is still 0 from reset() (or from the last
+            # arena), so without this the very first boss frame reads
+            # "idle = steps - 0 >= 600" and the episode is cut the instant
+            # the boss appears -- which is exactly why a full 1-4 run
+            # reached 5414 px and then ended with stalled=True, 0 hits.
+            self._boss_act_step = self._steps
+        if self._boss_fight:
+            progress_r = 0.0
+        # x_progress is now the honest furthest point, not a sum of legs.
+        self._x_progress = self._best_progress
 
         score_r = np.clip(score - self._last_score, 0, 20) * SCORE_SCALE
         stamina_r = -0.01 if sta < self._last_stamina else 0.0
@@ -806,10 +1090,17 @@ class AdventureIslandEnv:
         # alone that is a stable strategy (only -0.001/step), so an episode
         # with no new best progress for STALL_STEPS decisions is ended with
         # a penalty.  "Standing still" is then never better than trying.
-        if progress > self._best_progress:
-            self._best_progress = progress
-            self._best_step = self._steps
-        stalled = (self._steps - self._best_step) >= STALL_STEPS
+        # _best_progress / _best_step are already maintained by the
+        # "new ground only" block above (2026-10-18); this only reads them.
+        # During a boss fight the camera is locked, so "no new progress" is
+        # the normal state, not stalling (the arena would otherwise end
+        # after 250 steps, well before the 8 hits are possible) -- there the
+        # clock measures inactivity since the last useful action instead.
+        if self._boss_fight:
+            idle = self._steps - self._boss_act_step
+            stalled = idle >= BOSS_STALL_STEPS
+        else:
+            stalled = (self._steps - self._best_step) >= STALL_STEPS
         stall_r = -STALL_PENALTY if stalled else 0.0
 
         # --- the important part: picking up the axe -------------------
@@ -859,6 +1150,51 @@ class AdventureIslandEnv:
             self._shot_steps = 0
             self._hit_pairs = set()
         kill_r = KILL_GAIN * kills
+
+        # --- boss damage: head hit counter (see BOSS_HEAD_HIT_BLOCK) ---
+        # Only an INCREASE of the head's block-16 counter pays, and only
+        # while the head is really on screen.  A reload (area_changed) or a
+        # death resets the object table, which must not pay.
+        boss_hits_now, boss_beaten = self._boss_hit_count()
+        boss_hits = 0
+        if (not area_changed and not dead and boss_hits_now >= 0
+                and self._last_boss_hits >= 0
+                and boss_hits_now > self._last_boss_hits):
+            boss_hits = boss_hits_now - self._last_boss_hits
+        boss_r = BOSS_HIT_GAIN * boss_hits
+        if boss_arrived and not dead:
+            # Reaching the arena has to be worth something ON ITS OWN.
+            # While the stall-clock bug was in place (see BOSS_STALL_STEPS)
+            # every arrival was punished with -1.0, so the policy learned
+            # to stop ~9 camera units short and stand there: it measured
+            # 2026-10-18 that the same snapshot advances cam 222 -> 231 in
+            # 145 frames when simply told to run right and jump.  One-shot
+            # per episode, so it cannot be farmed.
+            boss_r += BOSS_ARRIVE_GAIN
+        boss_killed = False
+        if (not area_changed and boss_beaten and not self._boss_beaten):
+            boss_killed = True
+            boss_r += BOSS_KILL_GAIN
+        boss_hp = boss_hits_now
+
+        # --- spacing: walk into the band where an axe can reach ----------
+        # Outside the band there is no reward at all, so "get closer" used
+        # to have zero gradient.  Pay once per NEW CLOSEST APPROACH (like
+        # the progress reward pays only for new ground), so shuffling back
+        # and forth cannot farm it.
+        boss_approach_r = 0.0
+        if not dead and self._boss_fight:
+            dxh = self._boss_head_dx()
+            if dxh is not None and dxh > BOSS_AIM_MAX \
+                    and dxh < BOSS_APPROACH_MAX:
+                if self._boss_dx_best is None:
+                    self._boss_dx_best = dxh       # first sighting: no pay
+                else:
+                    gain = self._boss_dx_best - dxh
+                    if gain > 0:
+                        boss_approach_r = BOSS_APPROACH_GAIN * min(gain, 8.0)
+                        self._boss_dx_best = dxh
+
         # Aiming shaping: an axe that flew through an enemy.
         near = 0 if dead else self._near_hits()
         near_r = NEAR_HIT_GAIN * near
@@ -873,10 +1209,46 @@ class AdventureIslandEnv:
                 aim_r = THROW_AIM_GAIN
                 self._aim_cd = THROW_AIM_CD
 
+        # Boss fight shaping, graded so there IS a gradient all the way
+        # from "runs into the boss and dies" to "lands a head hit":
+        #   1. spacing  - stop in the band where an axe can reach (the axe
+        #                 only flies ~57 px and touching the boss is fatal)
+        #   2. airborne - be off the ground there (a ground throw peaks at
+        #                 y=136, the head is at y=93, so it can never hit)
+        #   3. release  - actually throw while airborne in the band
+        # All three share one cooldown, so camping at the right distance
+        # pays ~0.003/step -- negligible next to real progress.
+        self._boss_aim_cd = max(0, self._boss_aim_cd - 1)
+        boss_close_r = 0.0
+        if not dead and self._boss_fight:
+            dxh = self._boss_head_dx()
+            if dxh is None:
+                pass
+            elif dxh < BOSS_TOO_CLOSE:
+                boss_close_r = -BOSS_CLOSE_PENALTY
+            elif dxh < BOSS_AIM_MAX:
+                boss_close_r = BOSS_HOLD_GAIN
+        if (not dead and self._boss_fight and self._boss_aim_cd == 0):
+            dxh = self._boss_head_dx()
+            if dxh is not None and BOSS_AIM_MIN < dxh < BOSS_AIM_MAX:
+                threw = bool(ACTIONS[self._action][0] & NES_INPUT_B)
+                if threw and self._player_airborne():
+                    aim_r += BOSS_AIM_GAIN          # the real thing
+                elif threw:
+                    aim_r += 0.15 * BOSS_AIM_GAIN   # right place, too low
+                else:
+                    aim_r += 0.05 * BOSS_AIM_GAIN   # just holding the range
+                self._boss_aim_cd = BOSS_AIM_CD
+                self._boss_act_step = self._steps
+
+        # Any real damage also feeds the boss clock.
+        if boss_hits:
+            self._boss_act_step = self._steps
+
         reward = (progress_r + score_r + stamina_r + death_r
                   + weapon_r + skate_r + life_r + inv_r + kill_r + near_r
-                  + aim_r + stall_r + clear_r - 0.001)
-
+                  + aim_r + stall_r + clear_r + boss_r + boss_approach_r
+                  + boss_close_r - 0.001)
         self._last_progress = progress
         self._last_score = score
         self._last_stamina = sta
@@ -887,6 +1259,9 @@ class AdventureIslandEnv:
         self._last_area = nes[R.AREA]
         self._last_round = nes[R.ROUND]
         self._last_checkpoint = nes[R.CHECKPOINT]
+        self._last_boss_hits = boss_hits_now
+        self._boss_beaten = boss_beaten
+        self._prev_boss_fight = self._boss_fight
         self._prev_stage_complete = sc
 
         info = {"x_progress": self._x_progress, "score": score,
@@ -900,6 +1275,9 @@ class AdventureIslandEnv:
                 "got_inv": inv_gained, "invincible": int(inv),
                 "stalled": bool(stalled),
                 "kills": kills, "near": near, "cleared": bool(cleared),
+                "boss_hp": boss_hp, "boss_hits": boss_hits,
+                "boss_killed": boss_killed,
+                "boss_fight": self._boss_fight,
                 "stage": (self.stage_labels[self._stage_idx]
                           if self.stage_pool else None),
                 "best_progress": self._best_progress}

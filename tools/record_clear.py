@@ -37,9 +37,13 @@ OUT = os.path.join(_ROOT, "outputs")
 CKPT = sys.argv[1] if len(sys.argv) > 1 else "runs/ppo_v10/ppo_final.pt"
 N_EP = 6
 FPS = 60
-# The live window shows the game at 3x.  Recording the raw 256x240 frame
-# looked soft on a modern screen, so the video is upscaled with NEAREST
-# (keeps the pixels crisp, no blur) to 1024x960 by default.
+# 2026-10-19: which stage to record.  Without these the script always
+# booted 1-1, so the first real 1-4 clear (runs/ppo_14n) could not be
+# captured: the agent has to see the one-hot bit of the stage it plays.
+START_STATE = None      # e.g. saves/stages/stage_1-4.state
+START_ROUND = 0         # 3 = 第四小关 (1-4)
+STAGE_IDX = 3           # one-hot bit: 3 = 1-4, 4 = 2-1
+FINAL_OUT = os.path.join(OUT, "adventure_island_clear.mp4")
 SCALE = 4
 for i, a in enumerate(sys.argv):
     if a == "--episodes" and i + 1 < len(sys.argv):
@@ -48,6 +52,14 @@ for i, a in enumerate(sys.argv):
         FPS = int(sys.argv[i + 1])
     if a == "--scale" and i + 1 < len(sys.argv):
         SCALE = int(sys.argv[i + 1])
+    if a == "--start-state" and i + 1 < len(sys.argv):
+        START_STATE = sys.argv[i + 1]
+    if a == "--start-round" and i + 1 < len(sys.argv):
+        START_ROUND = int(sys.argv[i + 1])
+    if a == "--stage-idx" and i + 1 < len(sys.argv):
+        STAGE_IDX = int(sys.argv[i + 1])
+    if a == "--out" and i + 1 < len(sys.argv):
+        FINAL_OUT = sys.argv[i + 1]
 
 # ~5 minutes of game time; a clear of stage 1-1 fits well inside this.
 MAX_FRAMES = FPS * 300
@@ -147,7 +159,9 @@ def play_one(net, env, path, fps, scale):
 def main():
     os.makedirs(OUT, exist_ok=True)
     net = load(CKPT)
-    env = AdventureIslandEnv()
+    env = AdventureIslandEnv(start_round=START_ROUND,
+                             stage_index=STAGE_IDX,
+                             start_state=START_STATE)
     results = []
     try:
         for ep in range(N_EP):
@@ -163,7 +177,8 @@ def main():
         env.close()
 
     best = max(results, key=lambda r: (r["win"], r["best"]))
-    final = os.path.join(OUT, "adventure_island_clear.mp4")
+    final = FINAL_OUT
+    os.makedirs(os.path.dirname(os.path.abspath(final)), exist_ok=True)
     if os.path.exists(final):
         os.remove(final)
     os.replace(best["path"], final)

@@ -138,7 +138,56 @@ ITEM_IDS = (ID_ITEM,)
 #  since -- kept, but marked doubtful in the overlay.)
 # 35/37/41: the octopus family of the water stages (user-identified from
 # the overlay screenshots, 2026-10-17).  41 takes two axe hits to die.
-ENEMY_IDS = (ID_ENEMY, 9, 4, 35, 37, 41)
+#
+# 7 / 10 / 32 / 56 -- the stage 1-4 (forest) cast, named by the user from
+# the annotated frames on 2026-10-18:
+#     7  FROG     hops along the ground
+#    10  CROW     the red bird that flies in on the 1600-2000 px stretch
+#    32  CHARGER  spawns BEHIND the player and runs him down
+#    56  SPIDER   drops on a thread and bobs up and down
+# All four were invisible to the policy before this: the death census
+# (tools/diag_14_deaths.py, 16 episodes) found id 10 next to the corpse in
+# 7 of 16 deaths and id 7 in 4, yet neither was in this tuple -- so the
+# "nearest enemy" feature never pointed at them and the axe-aiming reward
+# never fired on them.  Killing one is worth a throw, so they go in.
+# 5 -- the end-of-stage killer of 1-4 (2026-10-18).  Found by the blind
+# death census (tools/diag_killer_id.py on ppo_14c, 12 episodes: 6 of 12
+# deaths ended overlapping id 5, all of them on the 4385..4872 px stretch)
+# and then nailed down with tools/probe_id5.py:
+#   * contact is LETHAL: walking right into it with the invulnerability
+#     cheat switched off kills on frame 43;
+#   * 900 frames of jump-throw spam leave it on screen -> not (yet) killed;
+#   * it drifts vertically ~32 px and slides horizontally, and shows up
+#     only in the last ~1200 px of the stage.
+# It was NOT in ENEMY_IDS, so the policy could not see it and never aimed
+# at it -- the same blind spot that cost us 7/10/32/56.  Added 2026-10-18.
+# Not yet named from a picture; ask the user before trusting the label.
+# --- id 36 : 2-1 killer, found 2026-10-19 -------------------------------
+# Same blind-spot story as 5/7/10/32/56.  Found with
+# tools/diag_killer_id.py --start-round 4 --stage-idx 4 on runs/ppo_21b:
+# 6 of 12 deaths had id 36 hugging the player ON THE DEATH FRAME
+# (dx 15..22, dy 0..16) at ~4770..4822 px, with nothing else lethal nearby
+# (the other slots there are 16 = fruit and 59 = platform, both harmless).
+# The other 6 deaths were id 14 (snail, already known) at ~4380..4415 px.
+# NOT yet named from a picture -- ask the user before trusting any label.
+ENEMY_IDS = (ID_ENEMY, 9, 4, 35, 37, 41, 7, 10, 32, 56, 5, 36)
+
+# --- the 1-4 boss -------------------------------------------------------
+# Named by the user from a screenshot (2026-10-18): the end-of-stage boss
+# is ONE creature drawn with TWO object slots --
+#     67  = the body (the tall thing on the ground)
+#     198 = the head (floats above the body)
+# Contact is lethal (tools/probe_boss_pair.py: standing next to them kills
+# on frame 33).  The user tested by hand: throwing axes at the BODY does
+# nothing, hitting the HEAD is what hurts it.
+# They only appear in the last stretch of 1-4 (first seen at ~5173 px).
+BOSS_BODY_ID = 67
+BOSS_HEAD_ID = 198
+BOSS_IDS = (BOSS_BODY_ID, BOSS_HEAD_ID)
+# id 63 = the boss AFTER it is beaten: the body turns into 63 the frame the
+# fight ends (measured 2026-10-18, outputs/boss_win.npy frame 3308 -- same
+# frame $007A stage-complete flips to 1 and the head floats off the top).
+BOSS_BEATEN_ID = 63
 
 # Lethal on contact: touching one of these costs a LIFE.  Measured with
 # tools/probe_id4.py (agent-driven survey, 6 episodes): id 2 is completely
@@ -187,6 +236,22 @@ OBJ_KINDS = {
     41: ("OCTO2HP?", (200, 90, 255)),       # two hits to kill, per the user
     ID_FRUIT_A: ("FRUIT", (255, 230, 60)),
     ID_FRUIT_B: ("FRUIT", (255, 230, 60)),
+    # --- the 1-4 forest cast (user-named 2026-10-18) ------------------
+    # Colours are picked to be separable from the player's green and from
+    # the existing ENEMY red, so an annotated frame can be read at a glance.
+    7: ("FROG", (120, 230, 140)),        # 青蛙: hops on the ground
+    10: ("CROW", (150, 130, 255)),       # 乌鸦: the red bird of 1600-2000 px
+    32: ("CHARGER", (255, 60, 120)),     # 从背后冲过来的敌人
+    56: ("SPIDER", (255, 150, 60)),      # 蜘蛛: 上下移动
+    # id 5 -- the lethal, apparently unkillable thing that guards the last
+    # ~1200 px of 1-4.  Name TBD (waiting on a picture from the user); the
+    # colour is picked to stand out from every other kind.
+    5: ("END5?", (255, 40, 255)),
+    # user identified from a screenshot (2026-10-18): 67 = the tall boss's
+    # BODY, 198 = its floating HEAD -- two slots, one creature.  Contact is
+    # lethal (probe_boss_pair.py: standing still next to them = death f33).
+    67: ("BOSS_BODY", (255, 90, 90)),
+    198: ("BOSS_HEAD", (255, 220, 90)),
     ID_ITEM: ("ITEM", (180, 120, 255)),
     PLAYER_ID: ("PLAYER", (60, 255, 60)),
     ID_PROJECTILE: ("SHOT", (90, 220, 255)),

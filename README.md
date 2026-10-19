@@ -1,6 +1,6 @@
 # adventure-island-ai
 
-用**纯 CPU 的 PPO** 训练 AI 玩通 FC《冒险岛》（Adventure Island, NES）**第一关（Round 1-1）、第二关（Round 1-2）与第三关（Round 1-3）**。
+用**纯 CPU 的 PPO** 训练 AI 玩通 FC《冒险岛》（Adventure Island, NES）**第一关（Round 1-1）到第四关（Round 1-4）**。
 
 技术栈：[cynes](https://github.com/Youlixx/cynes) NES 模拟器（可读 RAM）+ 手动逆向的游戏内存地图 + 自研 Gym 风格环境。观测把 **CNN 视觉特征**（80×86 灰度帧堆叠）与 **RAM 数值特征**融合——因为平台、坑、悬崖这些地形信息只存在于像素里，纯 RAM 观测的 agent 永远学不会跳。
 
@@ -20,6 +20,15 @@
   <em>完整通关录像（含 jsnes 还原的原版 BGM）：</em>
   <a href="videos/1-3_clear_player.mp4">玩家视角 mp4（768×720，带标注）</a>
   · <a href="videos/1-3_clear_agent.mp4">agent 视角 mp4（马赛克）</a>
+</p>
+
+第四关模型（`models/ppo_1-4_clear_87M.pt`，累计 **8722 万** env steps）**已拿下 Round 1-4**：24 局实测 **21 局通关（88%）**，是目前四关里通关率最高的一份权重。1-4 与前三个小关的本质区别是**有 boss**——先跑完约 5400 px 的关卡，再在柱廊场地里助跑跳、空中扔斧头，8 次命中把 boss 打飞。下面是最后冲刺 → boss 战 → 通关谢幕（带实时标注）。
+
+<p align="center">
+  <img src="docs/images/1-4_clear.gif" width="70%" alt="AI 通关第四关 Round 1-4（boss 战 + STAGE CLEAR）"/>
+  <br/>
+  <em>完整通关录像（含 boss 战与 STAGE CLEAR）：</em>
+  <a href="videos/1-4_clear_player.mp4">玩家视角 mp4（768×720，带标注）</a>
 </p>
 
 ## 成果
@@ -57,6 +66,21 @@
 > ⚠️ **评估起点的坑**：`--start-round 2`（和训练一致的开机起点）能测出通关，
 > 用 `saves/stages/stage_1-3.state` 起点测 12 局 0 通关（最好 6607 px）——同一份权重两种结论。
 > 详见 [历史记录](历史记录/第二关训练曲折史.md)。
+
+### 第四关（Round 1-4，累计 87M 步）
+
+| 指标 | 数值 |
+|------|------|
+| 训练量 | 87,220,224 env steps（承接 1-4 专项训练，后期混入 2-1 继续练） |
+| 课程 | 1-4 真实跑动帧 + 16 张不同构图的 boss 战快照 + 逐渐加入 2-1 |
+| 实测通关 | greedy **24 局 21 局通关（88%）**——四关中最高 |
+| boss 战 | 8 次命中击杀；有效窗口 dx≈25~70 px，必须"助跑跳 + 空中投掷" |
+| 观测 | 71 维 RAM 向量（32 关 one-hot + 火焰弹位 + 无敌位）+ 80×86×2 灰度帧堆叠 |
+| 模型 | [`models/ppo_1-4_clear_87M.pt`](models/ppo_1-4_clear_87M.pt)（回放需 `--start-round 3 --stage-idx 3`） |
+
+> 有意思的是：**练 2-1 的过程中 1-4 反而变强了**（71M 的 83% → 87M 的 88%），
+> 因为课程池里一直保留着一半的 1-4 样本。踩坑全过程见
+> [历史记录/1-2到1-4训练挫折史.md](历史记录/1-2到1-4训练挫折史.md)。
 
 <p align="center">
   <img src="docs/images/stage_clear.png" width="45%" alt="STAGE CLEAR"/>
@@ -100,6 +124,11 @@ python visualize.py models/ppo_1-2_clear_8M.pt \
 # 后者测出来是 0/12 通关，同一份权重两种结论）
 python visualize.py models/ppo_1-3_clear_16M.pt \
     --start-round 2 --stage-idx 2
+
+# 观看第四关模型（--stage-idx 3 不能省：这个权重的 one-hot 里 1-4 是 3、2-1 是 4，
+# 喂错索引策略会"看错关卡"）
+python visualize.py models/ppo_1-4_clear_87M.pt \
+    --start-round 3 --stage-idx 3
 
 # 无头评估：N 局贪心策略 —— 用 eval_native.py（真训练 env），
 # evaluate.py 的观测 shim 已随观测扩维漂移，数字不可信
@@ -196,7 +225,7 @@ record.py              把一局录成 GIF + Contact Sheet
 ram_map.py             RAM 地址常量、对象槽解码、摄像机跟踪
 tools/                 111 个逆向探测脚本（见下表）
 runs/ppo_v10/          发布的第一关模型 + 训练曲线
-models/                发布的通关模型（1-2: ppo_1-2_clear_8M.pt，1-3: ppo_1-3_clear_16M.pt）+ 训练曲线
+models/                发布的通关模型（1-2: ppo_1-2_clear_8M.pt，1-3: ppo_1-3_clear_16M.pt，1-4: ppo_1-4_clear_87M.pt）+ 训练曲线
 历史记录/               第二关训练曲折史：踩坑 → 误判 → 决定性实验 → 修复
 videos/                通关录像（mp4，GitHub 仅提供下载）
 docs/images/           README 截图 + 自动播放的通关 GIF
@@ -236,7 +265,8 @@ docs/images/           README 截图 + 自动播放的通关 GIF
 
 ## 已知限制
 
-- **Round 1-1、1-2、1-3 已通关**；1-4 及更后面的轮次尚未攻克（1-4 前段密度明显更高：脚本机器人 696 px 就死 49 次）。
+- **Round 1-1 ~ 1-4 已通关**；2-1 及更后面的轮次尚未攻克（2-1 已开始混入课程池，但还没有稳定通关的权重）。
+- 四关的通关率差异很大：1-1 是 8/8，1-2 是 4/12，1-3 是 2/16，**1-4 是 21/24**——越难的关卡反而越稳，因为后面的训练用了更大的课程池和更长的步数。
 - 第三关通关率还只有 **2/16（约 12%）**，且**只对 `--start-round 2` 的开机起点成立**；换 `saves/stages/stage_1-3.state` 起点测是 0/12。评估一律用 `tools/eval_native.py`（`evaluate.py` 的观测 shim 已随观测扩维漂移，数字不可信）。
 - 第二关的通关率还有波动：原生环境 12 局 8 局跑满全程，无头评估 12 局 4 局通关，剩下的大多死在终点前 **5186 px** 那一处（还没定位是什么）。
 - 游戏完全确定性：不插入随机 warmup 的话，8 个并行世界会跑出字节级相同的轨迹（实测：无 warmup 时 20 局评估全是同一局的 1975 px）。reset 时会插入 ≤90 帧随机操作。

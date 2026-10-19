@@ -30,7 +30,12 @@ def main() -> None:
     ap.add_argument("--episodes", type=int, default=12)
     ap.add_argument("--start-state", default=None)
     ap.add_argument("--start-round", type=int, default=0)
-    ap.add_argument("--stage-idx", type=int, default=0)
+    ap.add_argument("--stage-idx", type=int, default=0,
+                    help="one-hot tail.  If the checkpoint was trained with "
+                         "--stages, this must be the POSITION OF --start-state "
+                         "IN THAT POOL (sorted 1-1,1-2,...), e.g. 3 for 1-4 "
+                         "and 4 for 1-4boss in pool 1-1,1-2,1-3,1-4,1-4boss -- NOT "
+                         "area*4+round.")
     ap.add_argument("--no-axe", action="store_true",
                     help="do NOT pre-equip the axe (workers do by default)")
     ap.add_argument("--clear-ends-episode", action="store_true")
@@ -50,7 +55,7 @@ def main() -> None:
         stage_index=args.stage_idx,
         clear_ends_episode=args.clear_ends_episode)
 
-    xs, steps, kills = [], [], []
+    xs, steps, kills, bests = [], [], [], []
     for e in range(args.episodes):
         o = env.reset(seed=1000 + e)
         n = 0
@@ -68,15 +73,27 @@ def main() -> None:
         steps.append(n)
         kills.append(int(info.get("kills", 0)))
         cleared = bool(info.get("cleared", False))
-        print(f"  ep{e+1:2d}: x_progress {info['x_progress']:7.1f} px  "
+        # x_progress is the SUM of the small forward deltas only: any jump
+        # of |dp| >= 64 (respawn, but also a rapid on-screen bounce) is
+        # dropped, so an agent that oscillates forward/back banks the
+        # return leg and is never charged for the outbound one.  On 1-4
+        # that inflates the number ~2.6x (measured 2026-10-17: x_progress
+        # 1911 px on a run whose true maximum was 744 px).  best_progress
+        # is the honest "furthest point actually reached".
+        bests.append(float(info.get("best_progress", 0.0)))
+        print(f"  ep{e+1:2d}: 真实 {info['best_progress']:7.1f} px  "
+              f"(累加 {info['x_progress']:7.1f})  "
               f"{n:4d} 决策 ({n * env.frame_skip} 帧)  "
               f"死 {int(info['death'])}  吃道具 {info.get('score', 0)}  "
               f"杀敌 {int(info.get('kills', 0))}"
               + ("   *** CLEAR ***" if cleared else ""))
 
     xs = np.asarray(xs)
+    bs = np.asarray(bests)
     print()
-    print(f"平均 {xs.mean():.1f} px  中位 {np.median(xs):.1f}  "
+    print(f"真实进度  平均 {bs.mean():.1f} px  中位 {np.median(bs):.1f}  "
+          f"最好 {bs.max():.1f}  最差 {bs.min():.1f}")
+    print(f"累加口径  平均 {xs.mean():.1f} px  中位 {np.median(xs):.1f}  "
           f"最好 {xs.max():.1f}  最差 {xs.min():.1f}   "
           f"平均 {np.mean(steps):.0f} 决策/局")
 
